@@ -12,6 +12,7 @@ const LABEL_BORDER: Record<HealthLabel, string> = {
   "off-topic": "#800080",
   "refusing incorrectly": "#00a1e0",
   unknown: "rgba(51,51,51,0.18)",
+  pending: "rgba(51,51,51,0.25)",
 };
 
 export function EventCard({ event }: Props) {

@@ -80,9 +80,9 @@ except ValueError:
     JUDGE_TIMEOUT = 60.0
 
 try:
-    JUDGE_HISTORY_TURNS = max(0, int(os.environ.get("JUDGE_HISTORY_TURNS", "6")))
+    JUDGE_HISTORY_TURNS = max(0, int(os.environ.get("JUDGE_HISTORY_TURNS", "4")))
 except ValueError:
-    JUDGE_HISTORY_TURNS = 6
+    JUDGE_HISTORY_TURNS = 4
 
 try:
     # Output cap for the judge call. The JSON itself is tiny (~100 tokens),
@@ -94,9 +94,11 @@ except ValueError:
     JUDGE_MAX_TOKENS = 4096
 
 # Cap each transcript turn so a long reply earlier in the session can't crowd
-# out the reply we actually want judged.
-TURN_CHAR_BUDGET = 800
-PERSONA_CHAR_BUDGET = 1200
+# out the reply we actually want judged. Smaller caps = faster judge calls
+# (fewer input tokens) at the cost of less verbose context. The two-shot
+# example survives untouched since it's the accuracy anchor.
+TURN_CHAR_BUDGET = 400
+PERSONA_CHAR_BUDGET = 600
 
 JUDGE_SYSTEM_PROMPT = """You are the AgentSense behavioral health judge.
 

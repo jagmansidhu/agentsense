@@ -14,6 +14,7 @@ const LABEL_COLORS: Record<HealthLabel, string> = {
   "off-topic": "#800080",
   "refusing incorrectly": "#00a1e0",
   unknown: "#a3a3a3",
+  pending: "#cbd5e1",
 };
 
 const LABEL_ORDER: HealthLabel[] = [
@@ -23,6 +24,7 @@ const LABEL_ORDER: HealthLabel[] = [
   "off-topic",
   "refusing incorrectly",
   "unknown",
+  "pending",
 ];
 
 export function LabelDonut({ events }: Props) {

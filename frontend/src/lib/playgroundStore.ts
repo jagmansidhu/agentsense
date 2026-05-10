@@ -21,6 +21,17 @@ export interface ChatTurn {
   createdAt: number;
   health?: ChatHealth;
   error?: string;
+  // Proxy-side event id. Matches the ``event_id`` carried by streamed
+  // ``assistant_token`` events and by ``agent_event`` Socket.IO emissions
+  // so the playground can update an assistant turn's ``health`` in place
+  // when the classifier refines a pending classification.
+  eventId?: string;
+}
+
+export interface StreamingTurn {
+  eventId: string;
+  content: string;
+  done: boolean;
 }
 
 export interface AgentRuntime {
@@ -29,6 +40,9 @@ export interface AgentRuntime {
   turns: ChatTurn[];
   pending: boolean;
   lastError?: string;
+  // Live-typing assistant bubble while CLōD is streaming. Replaced by a
+  // persisted ``ChatTurn`` once the HTTP response resolves.
+  streamingTurn?: StreamingTurn;
 }
 
 interface PlaygroundState {
@@ -44,6 +58,12 @@ interface PlaygroundState {
   setActiveAgent: (agentId: string | null) => void;
   sendUserMessage: (agentId: string, message: string) => Promise<void>;
   resetConversation: (agentId: string) => void;
+  // Streaming + classification refinement. These actions are dispatched from
+  // ``lib/socket.ts`` when CLōD/proxy emit per-token deltas, the stream-done
+  // sentinel, and the post-classification ``agent_event`` update.
+  appendStreamToken: (sessionId: string, eventId: string, delta: string) => void;
+  finalizeStream: (sessionId: string, eventId: string) => void;
+  updateTurnHealth: (eventId: string, health: ChatHealth) => void;
 }
 
 const newSessionId = (slug: string) =>
@@ -63,6 +83,7 @@ const HEALTH_LABELS: HealthLabel[] = [
   "off-topic",
   "refusing incorrectly",
   "unknown",
+  "pending",
 ];
 
 const normalizeLabel = (value: unknown): HealthLabel => {
@@ -192,6 +213,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
         content: response.reply,
         createdAt: Date.now(),
         health,
+        eventId: response.event_id,
       };
       set((state) => {
         const current = state.agents[agentId];
@@ -204,6 +226,8 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
               turns: [...current.turns, assistantTurn],
               pending: false,
               lastError: undefined,
+              // Replace the live-typing bubble with the persisted turn.
+              streamingTurn: undefined,
             },
           },
         };
@@ -220,11 +244,81 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
               ...current,
               pending: false,
               lastError: message,
+              streamingTurn: undefined,
             },
           },
         };
       });
     }
+  },
+  appendStreamToken: (sessionId, eventId, delta) => {
+    set((state) => {
+      const entry = Object.entries(state.agents).find(
+        ([, runtime]) => runtime.sessionId === sessionId,
+      );
+      if (!entry) return {};
+      const [agentId, runtime] = entry;
+      const existing = runtime.streamingTurn;
+      // If we're already streaming a different event, the new delta wins —
+      // ditch the old fragment so the bubble doesn't show stale content.
+      const base =
+        existing && existing.eventId === eventId
+          ? existing
+          : { eventId, content: "", done: false };
+      return {
+        agents: {
+          ...state.agents,
+          [agentId]: {
+            ...runtime,
+            streamingTurn: {
+              ...base,
+              content: base.content + delta,
+              done: false,
+            },
+          },
+        },
+      };
+    });
+  },
+  finalizeStream: (sessionId, eventId) => {
+    set((state) => {
+      const entry = Object.entries(state.agents).find(
+        ([, runtime]) => runtime.sessionId === sessionId,
+      );
+      if (!entry) return {};
+      const [agentId, runtime] = entry;
+      if (!runtime.streamingTurn || runtime.streamingTurn.eventId !== eventId) {
+        return {};
+      }
+      return {
+        agents: {
+          ...state.agents,
+          [agentId]: {
+            ...runtime,
+            streamingTurn: { ...runtime.streamingTurn, done: true },
+          },
+        },
+      };
+    });
+  },
+  updateTurnHealth: (eventId, health) => {
+    set((state) => {
+      let mutated = false;
+      const nextAgents: Record<string, AgentRuntime> = {};
+      for (const [agentId, runtime] of Object.entries(state.agents)) {
+        const idx = runtime.turns.findIndex((turn) => turn.eventId === eventId);
+        if (idx < 0) {
+          nextAgents[agentId] = runtime;
+          continue;
+        }
+        mutated = true;
+        const nextTurns = runtime.turns.map((turn, i) =>
+          i === idx ? { ...turn, health } : turn,
+        );
+        nextAgents[agentId] = { ...runtime, turns: nextTurns };
+      }
+      return mutated ? { agents: nextAgents } : {};
+    });
   },
   resetConversation: (agentId) => {
     set((state) => {

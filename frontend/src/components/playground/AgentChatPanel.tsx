@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentRuntime, ChatTurn } from "../../lib/playgroundStore";
+import type { AgentRuntime, ChatTurn, StreamingTurn } from "../../lib/playgroundStore";
 import { usePlaygroundStore } from "../../lib/playgroundStore";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/input";
@@ -29,7 +29,9 @@ export function AgentChatPanel({ runtime }: Props) {
     if (node) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [runtime.turns.length, runtime.pending]);
+    // Re-scroll on streaming token growth too so the bubble follows along
+    // as the assistant types.
+  }, [runtime.turns.length, runtime.pending, runtime.streamingTurn?.content]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -107,12 +109,21 @@ export function AgentChatPanel({ runtime }: Props) {
         ref={scrollRef}
         className="grid max-h-[28rem] gap-3 overflow-auto rounded-[4px] border border-[rgba(51,51,51,0.08)] bg-[rgba(248,250,252,0.6)] p-3"
       >
-        {runtime.turns.length === 0 ? (
+        {runtime.turns.length === 0 && !runtime.streamingTurn ? (
           <EmptyState />
         ) : (
           runtime.turns.map((turn) => <ChatBubble key={turn.id} turn={turn} />)
         )}
-        {runtime.pending ? <PendingBubble /> : null}
+        {/* Live-typing bubble while CLōD is streaming. Once `sendUserMessage`
+            resolves, the streamingTurn is cleared and the persisted turn
+            renders above instead. If the stream is in flight but the bubble
+            hasn't received its first token yet, fall back to the dotted
+            pending indicator so the user sees something immediately. */}
+        {runtime.streamingTurn ? (
+          <StreamingBubble streamingTurn={runtime.streamingTurn} />
+        ) : runtime.pending ? (
+          <PendingBubble />
+        ) : null}
         {runtime.lastError ? (
           <p className="rounded-[4px] border border-[rgba(220,38,38,0.35)] bg-[rgba(220,38,38,0.05)] px-3 py-2 text-xs text-[rgb(220,38,38)]">
             {runtime.lastError}
@@ -161,7 +172,9 @@ function ChatBubble({ turn }: { turn: ChatTurn }) {
         {turn.health ? (
           <>
             <HealthBadge label={turn.health.label} />
-            <span>{(Number(turn.health.confidence) * 100).toFixed(0)}%</span>
+            {turn.health.label === "pending" ? null : (
+              <span>{(Number(turn.health.confidence) * 100).toFixed(0)}%</span>
+            )}
           </>
         ) : null}
       </div>
@@ -187,8 +200,27 @@ function PendingBubble() {
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--business-blue)]" />
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--business-blue)]" style={{ animationDelay: "120ms" }} />
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--business-blue)]" style={{ animationDelay: "240ms" }} />
-          <span className="ml-1 text-xs">contacting CLōD &amp; classifier…</span>
+          <span className="ml-1 text-xs">contacting CLōD…</span>
         </span>
+      </div>
+    </div>
+  );
+}
+
+function StreamingBubble({ streamingTurn }: { streamingTurn: StreamingTurn }) {
+  return (
+    <div className="grid justify-items-start gap-1">
+      <div className="max-w-[85%] rounded-[6px] border border-[rgba(51,51,51,0.12)] bg-white px-3 py-2 text-sm leading-relaxed text-[var(--dark-grey)] shadow-[var(--shadow-light)]">
+        <p className="whitespace-pre-wrap">
+          {streamingTurn.content}
+          {streamingTurn.done ? null : (
+            <span className="ml-0.5 inline-block h-3.5 w-[2px] -translate-y-[1px] animate-pulse bg-[var(--business-blue)] align-middle" />
+          )}
+        </p>
+      </div>
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.1em] text-[rgba(51,51,51,0.45)]">
+        <span>assistant</span>
+        <span>· {streamingTurn.done ? "stream complete · classifying…" : "typing…"}</span>
       </div>
     </div>
   );

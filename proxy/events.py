@@ -63,19 +63,30 @@ def _summarize(events: List[Event]) -> List[Dict[str, object]]:
 
 
 class EventStore:
-    """In-memory bounded ring buffer."""
+    """In-memory bounded ring buffer.
+
+    ``append`` is an **upsert by ``id``** — if the caller supplies an ``id``
+    that already exists, the existing entry is replaced in place (preserving
+    deque ordering). This lets the proxy emit a "pending" classification
+    event and later refine it with the real label without producing a
+    duplicate card on the dashboard.
+    """
 
     def __init__(self, max_events: int = 1000) -> None:
         self._events: Deque[Event] = deque(maxlen=max_events)
         self._lock = Lock()
 
     def append(self, event: Event) -> Event:
-        enriched = {
+        enriched: Event = {
             **event,
-            "id": str(uuid.uuid4()),
-            "created_at": int(time.time() * 1000),
+            "id": event.get("id") or str(uuid.uuid4()),
+            "created_at": event.get("created_at") or int(time.time() * 1000),
         }
         with self._lock:
+            for i, existing in enumerate(self._events):
+                if existing.get("id") == enriched["id"]:
+                    self._events[i] = enriched
+                    return enriched
             self._events.append(enriched)
         return enriched
 
@@ -101,7 +112,12 @@ class EventStore:
 
 
 class SqliteEventStore:
-    """SQLite-backed event log. Engaged when ``AGENTSENSE_DB_PATH`` is set."""
+    """SQLite-backed event log. Engaged when ``AGENTSENSE_DB_PATH`` is set.
+
+    ``append`` is an **upsert by ``id``** — pending events get refined to
+    classified events on the same row, so the dashboard sees one card per
+    turn even after a hydration round-trip.
+    """
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -110,12 +126,19 @@ class SqliteEventStore:
     def append(self, event: Event) -> Event:
         enriched: Event = {
             **event,
-            "id": str(uuid.uuid4()),
-            "created_at": int(time.time() * 1000),
+            "id": event.get("id") or str(uuid.uuid4()),
+            "created_at": event.get("created_at") or int(time.time() * 1000),
         }
         with _db_connect(self._path) as conn:
             conn.execute(
-                "INSERT INTO events (id, session_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO events (id, session_id, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    payload    = excluded.payload,
+                    created_at = excluded.created_at
+                """,
                 (
                     enriched["id"],
                     str(enriched.get("session_id") or "default"),

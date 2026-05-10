@@ -4,7 +4,11 @@ export type HealthLabel =
   | "stuck in a loop"
   | "off-topic"
   | "refusing incorrectly"
-  | "unknown";
+  | "unknown"
+  // In-flight: the proxy emits this label the moment the assistant reply
+  // finishes streaming, so the dashboard card mounts immediately. It is
+  // refined by a second `agent_event` (same id) once the classifier returns.
+  | "pending";
 
 export interface AgentEvent {
   id: string;
@@ -32,6 +36,11 @@ export interface ChatResponse {
   health: ChatHealth;
   agent_id?: string | null;
   session_id?: string;
+  // Stable id shared with the streamed assistant_token events and the
+  // pending → classified `agent_event` updates emitted over Socket.IO.
+  // The frontend uses this to match streamed tokens to the right runtime
+  // and to refine an assistant turn's `health` when classification arrives.
+  event_id?: string;
 }
 
 export interface AgentDefinition {

@@ -111,9 +111,17 @@ Response:
     "confidence": 0.0,
     "explanation": "string",
     "all_scores": { "label": 0.0 }
-  }
+  },
+  "event_id": "uuid",
+  "session_id": "string",
+  "agent_id": "string|null"
 }
 ```
+
+`health.label` may be `"pending"` on this response. The proxy returns as soon
+as the assistant reply is in (so the chat UI feels instant) and runs the
+classifier in a background task. The refined classification is delivered
+over Socket.IO via a second `agent_event` with the same `id`.
 
 ### `POST /classify`
 
@@ -138,6 +146,14 @@ Response (unchanged contract):
 
 ### `agent_event` (Socket.IO: proxy → frontend)
 
+Emitted **twice per turn**, sharing the same `id`:
+1. **Pending** — the moment the assistant reply finishes streaming, with
+   `label="pending"` and `confidence=0`. Lets the dashboard mount the card
+   immediately.
+2. **Classified** — once the background classifier returns, with the real
+   label / confidence / explanation. Consumers should upsert by `id` so the
+   first card refines in place rather than producing a duplicate.
+
 ```json
 {
   "id": "uuid",
@@ -149,6 +165,34 @@ Response (unchanged contract):
   "explanation": "string",
   "greptile_context": "optional file:line",
   "created_at": 1710000000000
+}
+```
+
+### `assistant_token` (Socket.IO: proxy → frontend)
+
+Per-token delta from the streaming CLōD chat completion. Emitted many times
+per turn while the assistant is generating its reply.
+
+```json
+{
+  "session_id": "string",
+  "agent_id": "string|null",
+  "event_id": "uuid (matches the agent_event.id for this turn)",
+  "delta": "string"
+}
+```
+
+### `assistant_stream_done` (Socket.IO: proxy → frontend)
+
+Stream-complete sentinel — emitted once after the last `assistant_token`
+for a turn so the playground bubble can stop showing its typing cursor.
+
+```json
+{
+  "session_id": "string",
+  "agent_id": "string|null",
+  "event_id": "uuid",
+  "reply": "full assembled reply"
 }
 ```
 
@@ -267,3 +311,4 @@ Keep entries brief and append-only.
 - 2026-05-10: Classifier: fixed false-positive "hallucinating" labels on healthy first-turn replies. System prompt rewritten with explicit "default to healthy" rule, tightened the hallucinating definition to require *specific* verifiably-false or fabricated content (silence in the persona is no longer evidence), dropped the "must commit to a next step" gate from healthy. Switched judge to two-shot prompting (healthy example before the loop example) so the model has a positive baseline to anchor against.
 - 2026-05-10: Classifier: hybrid loop detection. Computes a deterministic Jaccard similarity score (3-word shingles) between the reply under review and prior assistant turns within the same window the judge sees, plus an intra-reply self-similarity (catches single-turn loops like "I apologize. Let me fix. I apologize. Let me fix."). The signal is rendered as evidence in the prompt with an interpretation guide so the judge sets `prior_repetition` against hard numbers instead of guessing.
 - 2026-05-10: Proxy: optional SQLite persistence via `AGENTSENSE_DB_PATH`. Unset → original in-memory `SessionStore` / `EventStore` (zero setup, fastest). Set → `SqliteSessionStore` / `SqliteEventStore` persist sessions + events to the given file across restarts. Stdlib `sqlite3` only — no new deps. WAL mode + per-call connections keep it thread-safe under uvicorn workers. New `proxy/db.py` houses the schema and connection helper.
+- 2026-05-10: Live demo flow optimized. (1) `/proxy/chat` now streams the CLōD reply: it emits per-token `assistant_token` Socket.IO events plus an `assistant_stream_done` sentinel so the playground bubble types live. (2) The classifier call moved into a background `asyncio.create_task` — the HTTP response returns the moment the reply finishes streaming with `health.label="pending"`. (3) `agent_event` is now emitted twice per turn with the same `id` (pending → classified); the dashboard store became an id-keyed upsert so the card refines in place. (4) Default judge prompt budgets shrunk (`JUDGE_HISTORY_TURNS` 6→4, `TURN_CHAR_BUDGET` 800→400, `PERSONA_CHAR_BUDGET` 1200→600) and `.env.example` recommends pointing `JUDGE_MODEL` at a smaller fast model. Net effect: per-turn user-perceived latency drops from ~6s blocking to instant streaming with classification arriving ~1s later.

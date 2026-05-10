@@ -8,7 +8,12 @@ Contract: see AGENTS.md §"Service contracts".
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
+import logging
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,6 +26,10 @@ from fastapi.responses import JSONResponse
 from proxy.agents import registry as agent_registry
 from proxy.events import events
 from proxy.session import store
+
+logger = logging.getLogger("agentsense.proxy")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,12 +112,202 @@ def _shape_health(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+async def _stream_clod_reply(
+    *,
+    payload: Dict[str, Any],
+    session_id: str,
+    agent_id: str | None,
+    event_id: str,
+) -> str:
+    """Fetch a CLōD chat completion, emitting per-token deltas over Socket.IO.
+
+    Tries SSE streaming first (``stream: True``). Many CLōD-routed models
+    (e.g. DeepSeek V3) buffer the full response before sending it, so the
+    SSE path may return no ``data:`` lines at all. When that happens the code
+    falls back to parsing the buffered body as a regular chat completion.
+    Either way, at least one ``assistant_token`` event is emitted so the
+    frontend streaming bubble activates.
+
+    Raises ``HTTPException`` on transport errors or non-200 status.
+    """
+    stream_payload = {**payload, "stream": True}
+    full_reply_chunks: List[str] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            async with client.stream(
+                "POST",
+                CLOD_API_URL,
+                headers={
+                    "Authorization": f"Bearer {CLOD_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+                json=stream_payload,
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    detail = body.decode("utf-8", errors="replace")[:2000]
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"CLōD HTTP {resp.status_code}: {detail}",
+                    )
+
+                # Accumulate all raw body bytes so we can fall back to
+                # non-streaming parsing if the SSE path yields nothing.
+                raw_body_lines: List[str] = []
+                saw_sse = False
+
+                async for line in resp.aiter_lines():
+                    raw_body_lines.append(line)
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = _json.loads(data)
+                    except _json.JSONDecodeError:
+                        continue
+                    try:
+                        delta = (
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                    except (AttributeError, IndexError, TypeError):
+                        delta = None
+                    if not delta:
+                        continue
+                    saw_sse = True
+                    full_reply_chunks.append(delta)
+                    try:
+                        await sio.emit(
+                            "assistant_token",
+                            {
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "event_id": event_id,
+                                "delta": delta,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("assistant_token emit failed: %s", exc)
+
+                # Fallback: model returned a buffered non-SSE JSON body.
+                if not saw_sse and raw_body_lines:
+                    raw_text = "\n".join(raw_body_lines)
+                    try:
+                        data = _json.loads(raw_text)
+                        content = str(
+                            data["choices"][0]["message"]["content"]
+                        ).strip()
+                    except (KeyError, IndexError, TypeError, _json.JSONDecodeError):
+                        content = ""
+                    if content:
+                        logger.info(
+                            "CLōD did not stream (buffered %d chars); "
+                            "emitting as single token",
+                            len(content),
+                        )
+                        full_reply_chunks.append(content)
+                        try:
+                            await sio.emit(
+                                "assistant_token",
+                                {
+                                    "session_id": session_id,
+                                    "agent_id": agent_id,
+                                    "event_id": event_id,
+                                    "delta": content,
+                                },
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("assistant_token fallback emit failed: %s", exc)
+
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"CLōD request failed: {exc}") from exc
+
+    return "".join(full_reply_chunks).strip()
+
+
+async def _classify_and_emit(
+    *,
+    event_id: str,
+    session_id: str,
+    user_message: str,
+    agent_reply: str,
+    history: List[Dict[str, str]],
+    agent_persona: str,
+    pending_payload: Dict[str, Any],
+) -> None:
+    """Run the classifier, upsert the refined event, and emit the final ``agent_event``.
+
+    Always emits a final ``agent_event`` so the dashboard card never sticks in
+    ``pending`` — classifier errors flatten to ``label="unknown"`` with the
+    error message in ``explanation``.
+    """
+    classification_raw: Dict[str, Any] = {
+        "label": "unknown",
+        "confidence": 0.0,
+        "explanation": "classifier unreachable",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=CLASSIFIER_TIMEOUT) as client:
+            cls_resp = await client.post(
+                CLASSIFIER_URL,
+                json={
+                    "session_id": session_id,
+                    "history": history,
+                    "latest_reply": agent_reply,
+                    "agent_system_prompt": agent_persona,
+                },
+            )
+        try:
+            classification_raw = cls_resp.json()
+        except ValueError:
+            classification_raw["explanation"] = (
+                f"classifier HTTP {cls_resp.status_code}: {cls_resp.text[:300]}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        classification_raw["explanation"] = f"classifier error: {exc}"
+
+    health = _shape_health(classification_raw)
+
+    refined_payload: Dict[str, Any] = {
+        **pending_payload,
+        "label": health.get("label"),
+        "confidence": health.get("confidence"),
+        "explanation": health.get("explanation"),
+    }
+    refined_event = events.append(refined_payload)
+    try:
+        await sio.emit("agent_event", refined_event)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("agent_event refine emit failed (event=%s): %s", event_id, exc)
+
+
 @app.post("/proxy/chat")
 async def proxy_chat(request: Request) -> JSONResponse:
-    """Forward chat to CLōD, classify the reply, and broadcast to the dashboard.
+    """Forward chat to CLōD (streaming) and kick off classification asynchronously.
 
-    Optional `agent_id` selects a registered agent; its system prompt and task are
-    prepended to the messages and its model/temperature override the defaults.
+    Behavior:
+      1. Append user turn to session history.
+      2. Stream the CLōD chat completion, emitting ``assistant_token`` events
+         to Socket.IO for each token so the playground bubble types live.
+      3. Emit ``assistant_stream_done`` once the stream completes.
+      4. Persist the assistant turn, then emit ``agent_event`` with
+         ``label="pending"`` so the dashboard card mounts immediately.
+      5. Spawn a background task that calls ``/classify`` and emits a second
+         ``agent_event`` with the SAME ``id`` and the real label/confidence.
+      6. Return the HTTP response with the full reply and ``health.label``
+         set to ``"pending"`` — callers that don't watch the socket still
+         get an immediate, well-formed response.
+
+    Optional ``agent_id`` selects a registered agent; its system prompt and
+    task are prepended to the messages and its model/temperature override
+    the defaults.
     """
     if not CLOD_API_KEY:
         raise HTTPException(status_code=500, detail="CLOD_API_KEY is not configured")
@@ -127,7 +326,9 @@ async def proxy_chat(request: Request) -> JSONResponse:
             raise HTTPException(status_code=404, detail=f"agent '{agent_id_raw}' not found")
 
     user_message = str(user_message).strip()
-    history: List[Dict[str, str]] = store.append(session_id, {"role": "user", "content": user_message})
+    history: List[Dict[str, str]] = store.append(
+        session_id, {"role": "user", "content": user_message}
+    )
 
     messages: List[Dict[str, str]] = list(history)
     if agent is not None:
@@ -148,90 +349,88 @@ async def proxy_chat(request: Request) -> JSONResponse:
     if CLOD_MAX_COMPLETION_TOKENS is not None:
         llm_payload["max_completion_tokens"] = CLOD_MAX_COMPLETION_TOKENS
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            llm_resp = await client.post(
-                CLOD_API_URL,
-                headers={
-                    "Authorization": f"Bearer {CLOD_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=llm_payload,
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"CLōD request failed: {exc}") from exc
+    # Stamp the event id up front so the streamed tokens, the pending event,
+    # and the refined event all share the same id (front-end keys upserts on it).
+    event_id = str(uuid.uuid4())
+    created_at = int(time.time() * 1000)
+    agent_id = agent.agent_id if agent else None
 
-    if llm_resp.status_code != 200:
-        detail = llm_resp.text[:2000]
-        raise HTTPException(status_code=502, detail=f"CLōD HTTP {llm_resp.status_code}: {detail}")
+    agent_reply = await _stream_clod_reply(
+        payload=llm_payload,
+        session_id=session_id,
+        agent_id=agent_id,
+        event_id=event_id,
+    )
+    if not agent_reply:
+        raise HTTPException(status_code=502, detail="CLōD returned an empty reply")
 
+    # Tell the playground bubble it can stop showing the typing cursor.
     try:
-        data = llm_resp.json()
-        agent_reply = str(data["choices"][0]["message"]["content"]).strip()
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=f"Unexpected CLōD response shape: {exc}") from exc
+        await sio.emit(
+            "assistant_stream_done",
+            {
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "event_id": event_id,
+                "reply": agent_reply,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("assistant_stream_done emit failed: %s", exc)
 
     history = store.append(session_id, {"role": "assistant", "content": agent_reply})
 
-    classification_raw: Dict[str, Any] = {
-        "label": "unknown",
-        "confidence": 0.0,
-        "explanation": "classifier unreachable",
-    }
     # Forward the active agent's persona + task so the classifier can judge
-    # "refusing incorrectly" against actual policy. Empty string is fine — the
-    # classifier falls back to judging on the conversation alone.
+    # "refusing incorrectly" against actual policy. Empty string is fine —
+    # the classifier falls back to judging on the conversation alone.
     agent_persona = agent.composed_system_prompt() if agent is not None else ""
-    try:
-        # Must exceed the classifier's own upstream timeout (60s by default) or
-        # the proxy will report "classifier error" before the judge can answer.
-        async with httpx.AsyncClient(timeout=CLASSIFIER_TIMEOUT) as client:
-            cls_resp = await client.post(
-                CLASSIFIER_URL,
-                json={
-                    "session_id": session_id,
-                    "history": history,
-                    "latest_reply": agent_reply,
-                    "agent_system_prompt": agent_persona,
-                },
-            )
-        # Try to use the body regardless of status: the classifier returns a
-        # well-shaped JSON envelope (with `label`, `confidence`, `explanation`,
-        # `all_scores`) on its 502 path — we want to surface that to the dashboard
-        # instead of replacing it with a generic HTTPStatusError message.
-        try:
-            classification_raw = cls_resp.json()
-        except ValueError:
-            classification_raw["explanation"] = (
-                f"classifier HTTP {cls_resp.status_code}: {cls_resp.text[:300]}"
-            )
-    except Exception as exc:
-        classification_raw["explanation"] = f"classifier error: {exc}"
 
-    health = _shape_health(classification_raw)
-
-    event_payload: Dict[str, Any] = {
+    pending_payload: Dict[str, Any] = {
+        "id": event_id,
+        "created_at": created_at,
         "session_id": session_id,
         "user_message": user_message,
         "message": agent_reply,
-        "label": health.get("label"),
-        "confidence": health.get("confidence"),
-        "explanation": health.get("explanation"),
+        "label": "pending",
+        "confidence": 0.0,
+        "explanation": "classifying…",
     }
     if agent is not None:
-        event_payload["agent_id"] = agent.agent_id
-        event_payload["agent_name"] = agent.name
+        pending_payload["agent_id"] = agent.agent_id
+        pending_payload["agent_name"] = agent.name
 
-    event = events.append(event_payload)
+    pending_event = events.append(pending_payload)
+    try:
+        await sio.emit("agent_event", pending_event)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("agent_event pending emit failed: %s", exc)
 
-    await sio.emit("agent_event", event)
+    # Kick off classification in the background. The HTTP response returns
+    # immediately below; the second `agent_event` (with the real label) will
+    # arrive over Socket.IO whenever the judge finishes.
+    asyncio.create_task(
+        _classify_and_emit(
+            event_id=event_id,
+            session_id=session_id,
+            user_message=user_message,
+            agent_reply=agent_reply,
+            history=history,
+            agent_persona=agent_persona,
+            pending_payload=pending_payload,
+        )
+    )
 
     return JSONResponse(
         {
             "reply": agent_reply,
-            "health": health,
+            "health": {
+                "label": "pending",
+                "confidence": 0.0,
+                "explanation": "classifying…",
+            },
             "agent_id": agent.agent_id if agent else None,
             "session_id": session_id,
+            "event_id": event_id,
         }
     )
 

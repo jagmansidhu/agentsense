@@ -32,6 +32,9 @@ const LABEL_HEALTH_SCORE: Record<HealthLabel, number> = {
   "off-topic": 55,
   "refusing incorrectly": 44,
   unknown: 60,
+  // In-flight events shouldn't tank the health score; treat them as a neutral
+  // 75 until the classifier comes back and refines the label in place.
+  pending: 75,
 };
 
 const ISSUE_GUIDANCE: Record<
