@@ -23,7 +23,10 @@ export function SessionPage() {
 
   return (
     <div className="grid gap-4">
-      <Link to="/" className="text-xs uppercase tracking-[0.12em] text-zinc-400 hover:text-zinc-200">
+      <Link
+        to="/monitor"
+        className="text-xs uppercase tracking-[0.12em] text-[rgba(51,51,51,0.6)] hover:text-[var(--business-blue)]"
+      >
         back to dashboard
       </Link>
       <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
