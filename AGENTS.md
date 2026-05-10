@@ -81,6 +81,18 @@ agentsense/
     └── correlate.py
 ```
 
+## Environment — CLōD (upstream LLM)
+
+The proxy calls CLōD’s **OpenAI-compatible** chat completions API.
+
+| Variable       | Typical value |
+|----------------|---------------|
+| `CLOD_API_URL` | `https://api.clod.io/v1/chat/completions` |
+| `CLOD_API_KEY` | from [app.clod.io](https://app.clod.io) |
+| `CLOD_MODEL`   | e.g. `DeepSeek V3` (see model catalog in dashboard) |
+
+Reference: [`docs/clod_api_quick_reference.md`](docs/clod_api_quick_reference.md).
+
 ## Service contracts (do not break)
 
 ### `POST /proxy/chat`
@@ -130,6 +142,7 @@ Response (unchanged contract):
 {
   "id": "uuid",
   "session_id": "string",
+  "user_message": "optional: latest user utterance",
   "message": "string",
   "label": "string",
   "confidence": 0.0,
@@ -165,9 +178,17 @@ Response (unchanged contract):
 ## Run locally
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+bash scripts/setup_venv.sh    # optional: creates ./venv + pip install -r requirements.txt
+source venv/bin/activate
+
+# Equivalent manual setup:
+# python -m venv venv && source venv/bin/activate
+# pip install -r requirements.txt
+
 cp .env.example .env
+
+# Optional: standalone CLōD connectivity test
+python scripts/test_clod_chat.py
 
 # Terminal 1
 uvicorn classifier.model:app --port 8001
@@ -224,3 +245,14 @@ npm run dev
 
 - Team playbook and demo script: `docs/agentsense_team_playbook.md`
 - Contact: ashishdawar2@gmail.com
+
+## Change Log
+
+Use this section as a running log of repository changes made during active development sessions.
+Keep entries brief and append-only.
+
+- 2026-05-10: Added a persistent change log section to track updates made during this session.
+- 2026-05-10: Added `scripts/setup_venv.sh` to create `./venv` and install `requirements.txt`; documented in Run it locally.
+- 2026-05-10: Tightened `scripts/test_clod_chat.py` into a deterministic PASS/FAIL smoke test (`Paris` one-word check, low temperature, truncation guard).
+- 2026-05-10: Smoke test: higher default `max_completion_tokens`, shorter prompts, optional `CLOD_SMOKE_MAX_TOKENS`; accept `Paris` on last line if model adds a short preamble.
+- 2026-05-10: Proxy: `.env` auto-load from repo root, CLōD URL normalization, CORS for dashboard `fetch`, optional `CLOD_*` generation envs; `agent_event` includes `user_message`. Dashboard chat form POSTs `/proxy/chat`.

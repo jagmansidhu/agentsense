@@ -9,21 +9,74 @@ Contract: see AGENTS.md §"Service contracts".
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List
 
 import httpx
 import socketio
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from proxy.events import events
 from proxy.session import store
 
-CLOD_API_URL = os.environ.get("CLOD_API_URL", "https://api.clod.ai/v1/chat")
-CLOD_API_KEY = os.environ.get("CLOD_API_KEY", "")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_dotenv(repo_root: Path) -> None:
+    env_file = repo_root / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(_REPO_ROOT)
+
+CLOD_API_URL = os.environ.get("CLOD_API_URL", "https://api.clod.io/v1/chat/completions").strip()
+CLOD_API_KEY = os.environ.get("CLOD_API_KEY", "").strip()
+CLOD_MODEL = os.environ.get("CLOD_MODEL", "DeepSeek V3").strip()
+CLOD_TEMPERATURE = float(os.environ.get("CLOD_TEMPERATURE", "0.7"))
+CLOD_MAX_TOKENS_RAW = os.environ.get("CLOD_MAX_COMPLETION_TOKENS")
 CLASSIFIER_URL = os.environ.get("CLASSIFIER_URL", "http://localhost:8001/classify")
 
+if CLOD_MAX_TOKENS_RAW is None or CLOD_MAX_TOKENS_RAW == "":
+    CLOD_MAX_COMPLETION_TOKENS: int | None = None
+else:
+    try:
+        CLOD_MAX_COMPLETION_TOKENS = int(str(CLOD_MAX_TOKENS_RAW).strip())
+    except ValueError:
+        CLOD_MAX_COMPLETION_TOKENS = None
+
+
+def _normalize_clod_url(url: str) -> str:
+    u = url.strip()
+    if u.rstrip("/").endswith("/v1") and "/chat/completions" not in u:
+        return u.rstrip("/") + "/chat/completions"
+    return u
+
+
+CLOD_API_URL = _normalize_clod_url(CLOD_API_URL)
+
 app = FastAPI(title="AgentSense Proxy")
+_origins_raw = os.environ.get("AGENTSENSE_CORS_ORIGINS", "*")
+_allow_origins = [o.strip() for o in _origins_raw.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 socket_app = socketio.ASGIApp(sio, app)
 
@@ -33,29 +86,67 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+def _shape_health(payload: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "label": payload.get("label"),
+        "confidence": payload.get("confidence"),
+        "explanation": payload.get("explanation"),
+    }
+    scores = payload.get("all_scores")
+    if scores is not None:
+        out["all_scores"] = scores
+    return out
+
+
 @app.post("/proxy/chat")
 async def proxy_chat(request: Request) -> JSONResponse:
     """Forward chat to CLōD, classify the reply, and broadcast to the dashboard."""
+    if not CLOD_API_KEY:
+        raise HTTPException(status_code=500, detail="CLOD_API_KEY is not configured")
+
     body = await request.json()
-    session_id = body.get("session_id", "default")
+    session_id = str(body.get("session_id") or "default").strip() or "default"
     user_message = body.get("message")
-    if not user_message:
+    if user_message is None or not str(user_message).strip():
         raise HTTPException(status_code=400, detail="message is required")
 
-    history = store.append(session_id, {"role": "user", "content": user_message})
+    user_message = str(user_message).strip()
+    history: List[Dict[str, str]] = store.append(session_id, {"role": "user", "content": user_message})
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        llm_resp = await client.post(
-            CLOD_API_URL,
-            headers={"Authorization": f"Bearer {CLOD_API_KEY}"},
-            json={"messages": history},
-        )
-        llm_resp.raise_for_status()
-        agent_reply = llm_resp.json()["choices"][0]["message"]["content"]
+    llm_payload: Dict[str, Any] = {
+        "model": CLOD_MODEL,
+        "messages": history,
+        "temperature": CLOD_TEMPERATURE,
+    }
+    if CLOD_MAX_COMPLETION_TOKENS is not None:
+        llm_payload["max_completion_tokens"] = CLOD_MAX_COMPLETION_TOKENS
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            llm_resp = await client.post(
+                CLOD_API_URL,
+                headers={
+                    "Authorization": f"Bearer {CLOD_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=llm_payload,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"CLōD request failed: {exc}") from exc
+
+    if llm_resp.status_code != 200:
+        detail = llm_resp.text[:2000]
+        raise HTTPException(status_code=502, detail=f"CLōD HTTP {llm_resp.status_code}: {detail}")
+
+    try:
+        data = llm_resp.json()
+        agent_reply = str(data["choices"][0]["message"]["content"]).strip()
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Unexpected CLōD response shape: {exc}") from exc
 
     history = store.append(session_id, {"role": "assistant", "content": agent_reply})
 
-    classification: Dict[str, Any] = {
+    classification_raw: Dict[str, Any] = {
         "label": "unknown",
         "confidence": 0.0,
         "explanation": "classifier unreachable",
@@ -71,23 +162,26 @@ async def proxy_chat(request: Request) -> JSONResponse:
                 },
             )
             cls_resp.raise_for_status()
-            classification = cls_resp.json()
-    except Exception as exc:  # never crash the chat path on classifier failure
-        classification["explanation"] = f"classifier error: {exc}"
+            classification_raw = cls_resp.json()
+    except Exception as exc:
+        classification_raw["explanation"] = f"classifier error: {exc}"
+
+    health = _shape_health(classification_raw)
 
     event = events.append(
         {
             "session_id": session_id,
+            "user_message": user_message,
             "message": agent_reply,
-            "label": classification.get("label"),
-            "confidence": classification.get("confidence"),
-            "explanation": classification.get("explanation"),
-        }
+            "label": health.get("label"),
+            "confidence": health.get("confidence"),
+            "explanation": health.get("explanation"),
+        },
     )
 
     await sio.emit("agent_event", event)
 
-    return JSONResponse({"reply": agent_reply, "health": classification})
+    return JSONResponse({"reply": agent_reply, "health": health})
 
 
 @app.get("/proxy/events")
@@ -108,7 +202,10 @@ async def get_sessions() -> Dict[str, Any]:
 @app.post("/proxy/reset")
 async def reset(request: Request) -> Dict[str, str]:
     """Clear session history. Handy between demo runs."""
-    body = await request.json() if await request.body() else {}
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        body = {}
     session_id = body.get("session_id")
     store.reset(session_id)
     events.reset(session_id)

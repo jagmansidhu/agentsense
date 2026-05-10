@@ -20,7 +20,10 @@ and streams health events to a React dashboard in real time.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env   # fill CLOD_API_KEY (+ optional CLOD_MODEL), GREPTILE_API_KEY
+
+# Optional: ping CLōD (needs httpx from requirements.txt)
+python scripts/test_clod_chat.py
 ```
 
 Fill at minimum:
@@ -77,10 +80,15 @@ agentsense/
 ├── README.md
 ├── requirements.txt
 ├── .env.example
+├── docs/
+│   ├── agentsense_team_playbook.md
+│   └── clod_api_quick_reference.md
+├── scripts/
+│   ├── setup_venv.sh
+│   └── test_clod_chat.py
 ├── proxy/
 ├── classifier/
 ├── alerts/
 ├── frontend/
 ├── greptile/
-└── docs/
 ```
