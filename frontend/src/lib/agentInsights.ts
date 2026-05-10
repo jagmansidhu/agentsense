@@ -22,7 +22,6 @@ export interface AgentIssue {
   priority: "high" | "medium" | "low";
   confidence: number;
   createdAt: number;
-  greptileContext?: string;
 }
 
 const LABEL_HEALTH_SCORE: Record<HealthLabel, number> = {
@@ -83,7 +82,7 @@ export function buildAgentSnapshots(events: AgentEvent[]): AgentSnapshot[] {
     snapshots.push({
       agentId,
       latestLabel: latest.label,
-      latestMessage: latest.message,
+      latestMessage: latest.output_excerpt ?? latest.thinking_excerpt ?? "",
       averageConfidence: confidenceTotal / ordered.length,
       healthScore: healthTotal / ordered.length,
       totalEvents: ordered.length,
@@ -106,12 +105,11 @@ export function buildAgentIssues(events: AgentEvent[]): AgentIssue[] {
         agentId: event.session_id,
         label: event.label,
         title: issueMeta.title,
-        detail: event.explanation || event.message,
+        detail: event.explanation || event.output_excerpt || event.thinking_excerpt || "",
         suggestedFix: issueMeta.fix,
         priority: issueMeta.priority,
         confidence: event.confidence,
         createdAt: event.created_at,
-        greptileContext: event.greptile_context,
       };
     });
 }

@@ -28,21 +28,42 @@ export function EventCard({ event }: Props) {
           {event.session_id} · {new Date(event.created_at).toLocaleTimeString()}
         </span>
       </div>
-      <p className="text-sm leading-relaxed text-[var(--dark-grey)]">{event.message}</p>
-      <p className="text-sm text-[rgba(51,51,51,0.65)]">{event.explanation}</p>
+      {event.thinking_excerpt && (
+        <div className="grid gap-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[rgba(51,51,51,0.45)]">thinking</p>
+          <p className="rounded-[4px] border border-[rgba(51,51,51,0.08)] bg-[var(--light-grey)] px-2.5 py-2 font-mono text-xs leading-relaxed text-[var(--dark-grey)]">
+            {event.thinking_excerpt}
+          </p>
+        </div>
+      )}
+      {event.action && (
+        <p className="text-xs text-[rgba(51,51,51,0.65)]">
+          <span className="font-semibold">action:</span> {event.action}
+        </p>
+      )}
+      {event.output_excerpt && (
+        <details className="group text-xs">
+          <summary className="cursor-pointer select-none text-[rgba(51,51,51,0.5)] transition-colors hover:text-[var(--business-blue)]">
+            output
+          </summary>
+          <p className="mt-1.5 text-sm leading-relaxed text-[var(--dark-grey)]">{event.output_excerpt}</p>
+        </details>
+      )}
+      {!event.thinking_excerpt && !event.output_excerpt && event.message && (
+        <p className="text-sm leading-relaxed text-[var(--dark-grey)]">{event.message}</p>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[rgba(51,51,51,0.5)]">
         <span>
           confidence{" "}
           <span className="font-semibold text-[rgba(51,51,51,0.75)]">
             {(event.confidence * 100).toFixed(1)}%
           </span>
+          {event.tool_count != null && event.tool_count > 0 && (
+            <span className="ml-2">{event.tool_count} tool{event.tool_count !== 1 ? "s" : ""}</span>
+          )}
         </span>
-        {event.greptile_context && (
-          <code className="rounded bg-[var(--light-grey)] px-1.5 py-0.5 font-mono text-[10px]">
-            {event.greptile_context}
-          </code>
-        )}
       </div>
+      <p className="text-xs text-[rgba(51,51,51,0.65)]">{event.explanation}</p>
     </li>
   );
 }

@@ -46,11 +46,15 @@ export function startSocket() {
     const event: AgentEvent = {
       id: payload.id ?? crypto.randomUUID(),
       session_id: payload.session_id ?? "default",
-      message: payload.message ?? "",
+      turn_id: payload.turn_id,
+      agent_id: payload.agent_id,
+      thinking_excerpt: payload.thinking_excerpt,
+      output_excerpt: payload.output_excerpt,
+      action: payload.action,
+      tool_count: payload.tool_count,
       label: normalizeLabel(payload.label),
       confidence: Number(payload.confidence ?? 0),
       explanation: payload.explanation ?? "No explanation provided",
-      greptile_context: payload.greptile_context,
       created_at: Number(payload.created_at ?? Date.now()),
     };
     useDashboardStore.getState().addEvent(event);

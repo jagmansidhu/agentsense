@@ -202,11 +202,6 @@ function IssueDetail({ issue }: { issue: AgentIssue }) {
           <span className="font-semibold">Confidence:</span>{" "}
           {(issue.confidence * 100).toFixed(1)}%
         </p>
-        {issue.greptileContext ? (
-          <p>
-            <span className="font-semibold">Code context:</span> {issue.greptileContext}
-          </p>
-        ) : null}
       </div>
       <div className="rounded-[4px] border border-[rgba(0,161,224,0.25)] bg-[rgba(0,161,224,0.06)] p-3 text-sm text-[rgba(51,51,51,0.82)]">
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--business-blue)]">
