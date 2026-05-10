@@ -3,8 +3,8 @@
 Run:
     uvicorn classifier.model:app --port 8001
 
-This service asks CLōD to score each agent reply into one label with
-confidence and a short reason. It preserves the existing `/classify` contract.
+Accepts a thinking-first payload (thinking/action/tool_calls/output/recent_turns)
+and returns the unchanged {label, confidence, explanation, all_scores} contract.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 
 import httpx
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 from alerts.openclaw import send_alert
 from classifier.explainer import augment_reason
@@ -36,32 +37,75 @@ CLOD_API_URL = os.environ.get("CLOD_API_URL", "https://api.clod.ai/v1/chat")
 CLOD_API_KEY = os.environ.get("CLOD_API_KEY", "")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "")
 
-JUDGE_SYSTEM_PROMPT = """You are an agent behavior auditor.
-Classify the assistant reply into exactly one label:
-- healthy
-- hallucinating
-- stuck in a loop
-- off-topic
-- refusing incorrectly
+JUDGE_SYSTEM_PROMPT = """You are an auditor of AI coding agents (especially Cursor agents).
+You receive the agent's THINKING (chain-of-thought), its planned ACTION,
+recent TOOL CALLS, the visible OUTPUT, and the USER GOAL. Decide which
+single label best describes this turn:
 
-Rules:
-- Return strict JSON only.
-- `label` must be one of the five labels exactly.
-- `confidence` must be a number between 0 and 1.
-- `reason` must be one concise sentence.
+- healthy: thinking is grounded in the goal and prior turns, plan is sensible
+- hallucinating: thinking asserts facts/tool capabilities not supported by context
+- stuck in a loop: same plan or same tool call recurring without progress
+- off-topic: thinking drifts away from the stated user goal
+- refusing incorrectly: refuses despite the goal being legitimate and feasible
 
-JSON schema:
-{"label":"...","confidence":0.0,"reason":"..."}
-"""
+Return strict JSON only: {"label":"...","confidence":0.0,"reason":"..."}
+Base your classification on THINKING first, OUTPUT second.
+confidence must be between 0.0 and 1.0."""
 
 
-def _build_context(latest_reply: str, history: List[Dict[str, str]]) -> str:
-    context = f"Agent reply: {latest_reply}"
-    if len(history) >= 3:
-        prev = history[-3].get("content", "")
-        if prev:
-            context += f"\n\nPrevious turn: {prev}"
-    return context
+# ---------------------------------------------------------------------------
+# Request model
+# ---------------------------------------------------------------------------
+
+class ToolCallItem(BaseModel):
+    name: str
+    args: dict = {}
+
+
+class ClassifyRequest(BaseModel):
+    session_id: str = "default"
+    agent_id: str = "unknown"
+    thinking: str = ""
+    action: str = ""
+    tool_calls: list[ToolCallItem] = []
+    output: str = ""
+    user_goal: str = ""
+    recent_turns: list[dict] = []
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _truncate(text: str, limit: int = 800) -> str:
+    return text[:limit] if len(text) > limit else text
+
+
+def _build_context(request: ClassifyRequest) -> str:
+    lines: List[str] = []
+
+    lines.append(f"USER GOAL: {request.user_goal or '(not specified)'}")
+    lines.append("")
+
+    if request.recent_turns:
+        lines.append("RECENT TURNS:")
+        turns = request.recent_turns[-3:]
+        offset = len(turns)
+        for i, turn in enumerate(turns):
+            n = offset - i
+            t_thinking = _truncate(str(turn.get("thinking", "")))
+            t_action = str(turn.get("action", ""))
+            lines.append(f"  [t-{n}] thinking={t_thinking} | action={t_action}")
+        lines.append("")
+
+    tool_calls_payload = json.dumps([t.dict() for t in request.tool_calls])
+    lines.append("THIS TURN:")
+    lines.append(f"  thinking={_truncate(request.thinking)}")
+    lines.append(f"  action={request.action}")
+    lines.append(f"  tool_calls={tool_calls_payload}")
+    lines.append(f"  output={_truncate(request.output)}")
+
+    return "\n".join(lines)
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
@@ -92,7 +136,7 @@ async def _judge_with_clod(context: str) -> Dict[str, Any]:
         raise RuntimeError("CLOD_API_KEY is missing")
 
     user_prompt = (
-        "Recent conversation context and latest agent output follow.\n\n"
+        "Agent turn context follows.\n\n"
         f"{context}\n\n"
         "Return only JSON in the required schema."
     )
@@ -117,37 +161,43 @@ async def _judge_with_clod(context: str) -> Dict[str, Any]:
     return _extract_json_object(content)
 
 
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/classify")
-async def classify(data: Dict[str, Any]) -> Dict[str, Any]:
-    latest_reply: str = data["latest_reply"]
-    history: List[Dict[str, str]] = data.get("history", [])
-    session_id: str = data.get("session_id", "default")
-
-    context = _build_context(latest_reply, history)
+async def classify(request: ClassifyRequest) -> dict:
+    context = _build_context(request)
     judge_result = await _judge_with_clod(context)
 
     top_label = _normalize_label(judge_result.get("label"))
     confidence = max(0.0, min(1.0, float(judge_result.get("confidence", 0.0))))
+
     explanation = augment_reason(
-        text=latest_reply,
+        thinking=request.thinking,
+        output=request.output,
         predicted_label=top_label,
         reason=str(judge_result.get("reason", "No reason provided")),
+        recent_turns=request.recent_turns,
+        tool_calls=[t.dict() for t in request.tool_calls],
     )
 
     if top_label != "healthy" and confidence > ALERT_CONFIDENCE_THRESHOLD:
+        snippet = request.thinking[:140] or request.output[:140]
         try:
-            await send_alert(session_id, top_label, confidence, latest_reply)
-        except Exception as exc:  # alerting must never break classification
+            await send_alert(request.session_id, top_label, confidence, snippet)
+        except Exception as exc:
             explanation += f" (alert failed: {exc})"
 
+    rounded = round(confidence, 3)
     return {
         "label": top_label,
-        "confidence": round(confidence, 3),
+        "confidence": rounded,
         "explanation": explanation,
-        "all_scores": _build_all_scores(top_label, round(confidence, 3)),
+        "all_scores": _build_all_scores(top_label, rounded),
     }
