@@ -13,9 +13,10 @@ from typing import Any, Dict
 
 import httpx
 import socketio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from proxy.events import events
 from proxy.session import store
 
 CLOD_API_URL = os.environ.get("CLOD_API_URL", "https://api.clod.ai/v1/chat")
@@ -74,23 +75,41 @@ async def proxy_chat(request: Request) -> JSONResponse:
     except Exception as exc:  # never crash the chat path on classifier failure
         classification["explanation"] = f"classifier error: {exc}"
 
-    await sio.emit(
-        "agent_event",
+    event = events.append(
         {
             "session_id": session_id,
             "message": agent_reply,
             "label": classification.get("label"),
             "confidence": classification.get("confidence"),
             "explanation": classification.get("explanation"),
-        },
+        }
     )
 
+    await sio.emit("agent_event", event)
+
     return JSONResponse({"reply": agent_reply, "health": classification})
+
+
+@app.get("/proxy/events")
+async def get_events(
+    session_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> Dict[str, Any]:
+    """Return recent events for dashboard hydration and reconnect."""
+    return {"events": events.list_events(session_id=session_id, limit=limit)}
+
+
+@app.get("/proxy/sessions")
+async def get_sessions() -> Dict[str, Any]:
+    """Return known sessions with their latest status and counts."""
+    return {"sessions": events.session_summaries(), "session_ids": store.list_ids()}
 
 
 @app.post("/proxy/reset")
 async def reset(request: Request) -> Dict[str, str]:
     """Clear session history. Handy between demo runs."""
     body = await request.json() if await request.body() else {}
-    store.reset(body.get("session_id"))
+    session_id = body.get("session_id")
+    store.reset(session_id)
+    events.reset(session_id)
     return {"status": "reset"}

@@ -1,62 +1,86 @@
 # AgentSense
 
 Real-time behavioral health monitor for AI agents.
-Built for **Cursor Hackathon Vancouver · May 10, 2026**.
 
-AgentSense sits between any LLM application and the LLM API, intercepts every
-agent reply, and uses an ML classifier to flag hallucinations, loops, off-topic
-responses, and incorrect refusals — before the user ever sees a bad output.
+AgentSense sits between your app and the LLM API, scores each assistant reply,
+and streams health events to a React dashboard in real time.
+
+## Current architecture
+
+- `proxy/` receives chat messages and forwards to CLōD
+- `classifier/` acts as an LLM judge (`/classify`) and returns
+  `label + confidence + explanation`
+- `proxy/events.py` stores a ring buffer for hydration
+- `frontend/` is a Vite + React + TypeScript PWA that consumes:
+  - live Socket.IO `agent_event`
+  - `GET /proxy/events` and `GET /proxy/sessions` for backfill
 
 ## Quickstart
 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in CLOD_API_KEY, GREPTILE_API_KEY
-
-# Terminal 1 — classifier (port 8001)
-uvicorn classifier.model:app --port 8001
-
-# Terminal 2 — proxy + Socket.IO (port 8000)
-uvicorn proxy.main:socket_app --port 8000
-
-# Terminal 3 — dashboard (any static server)
-python -m http.server 5500 --directory dashboard
-# open http://localhost:5500
+cp .env.example .env
 ```
 
-## Send a test request
+Fill at minimum:
+
+- `CLOD_API_KEY`
+- `GREPTILE_API_KEY` (optional for early frontend work)
+
+Optional classifier override:
+
+- `JUDGE_MODEL`
+
+Run services:
+
+```bash
+# Terminal 1 — judge classifier
+uvicorn classifier.model:app --port 8001
+
+# Terminal 2 — proxy + socket server
+uvicorn proxy.main:socket_app --port 8000
+
+# Terminal 3 — React dashboard
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+## Test a live event
 
 ```bash
 curl -X POST http://localhost:8000/proxy/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id": "demo", "message": "Hello!"}'
+  -d '{"session_id":"demo","message":"hello"}'
 ```
 
-Watch the dashboard light up.
+Then refresh data from:
+
+- `GET http://localhost:8000/proxy/events?limit=20`
+- `GET http://localhost:8000/proxy/sessions`
+
+## Frontend notes
+
+- Design spec lives in `frontend/DESIGN.md`
+- Styling follows minimal Swiss style
+- Session drill-down route: `/session/:sessionId`
+- PWA is enabled via `vite-plugin-pwa`
 
 ## Project layout
 
 ```
 agentsense/
-├── AGENTS.md             ← context for AI coding agents (read this first)
+├── AGENTS.md
 ├── README.md
 ├── requirements.txt
 ├── .env.example
-├── docs/
-│   └── agentsense_team_playbook.md
-├── proxy/                ← FastAPI proxy + Socket.IO server
-├── classifier/           ← ML classifier service + SHAP explainer
-├── alerts/               ← OpenClaw → Telegram/WhatsApp
-├── dashboard/            ← live monitor UI
-└── greptile/             ← code-correlation integration
+├── proxy/
+├── classifier/
+├── alerts/
+├── frontend/
+├── greptile/
+└── docs/
 ```
-
-## Docs
-
-- **Agent context** for AI coding tools: [`AGENTS.md`](AGENTS.md)
-- **Full team plan**, sprint schedule, demo script: [`docs/agentsense_team_playbook.md`](docs/agentsense_team_playbook.md)
-
-## Stack
-
-FastAPI · HuggingFace Transformers · SHAP · Socket.IO · CLōD · Greptile · OpenClaw

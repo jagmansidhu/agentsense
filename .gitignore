@@ -25,6 +25,12 @@ env/
 .vscode/
 *.swp
 
+# Frontend
+node_modules/
+*.tsbuildinfo
+frontend/dist/
+frontend/.vite/
+
 # Models / caches
 .cache/
 ~/.cache/huggingface/
