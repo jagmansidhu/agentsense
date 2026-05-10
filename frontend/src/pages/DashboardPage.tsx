@@ -63,8 +63,9 @@ export function DashboardPage() {
             Agent behavioral health
           </h1>
           <p className="max-w-[68ch] text-sm text-[rgba(51,51,51,0.7)]">
-            Every assistant turn is intercepted, classified, and scored. Catch hallucinations,
-            loops, off-topic drift, and over-cautious refusals before users see them.
+            Every assistant turn is intercepted, classified, and scored in real time.
+            Catch agents looping on phantom failures, hallucinating data they can't access,
+            drifting off task, or refusing harmless requests — before users notice or credits drain.
           </p>
           {error ? (
             <p className="mt-1 text-xs text-[rgb(220,38,38)]">{error}</p>

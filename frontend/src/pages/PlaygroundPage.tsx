@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { AgentChatPanel } from "../components/playground/AgentChatPanel";
 import { AgentSidebar } from "../components/playground/AgentSidebar";
+import { DemoPanel } from "../components/playground/DemoPanel";
 import { usePlaygroundStore } from "../lib/playgroundStore";
 
 export function PlaygroundPage() {
@@ -27,9 +28,9 @@ export function PlaygroundPage() {
       <header className="grid gap-1">
         <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Multi-agent playground</h1>
         <p className="text-sm text-[rgba(51,51,51,0.65)]">
-          Spin up multiple chatbots, give each one a system prompt and a task, then chat with them
-          through the AgentSense proxy. Every reply is forwarded to the classifier and shows up in
-          the live monitor.
+          Spin up agents, assign them tasks, and send messages through the AgentSense proxy.
+          Every reply is classified in real time — loop detection, hallucination scoring,
+          topic drift, and refusal checks — and streams live to the monitor.
         </p>
         {loading ? (
           <p className="text-xs text-[rgba(51,51,51,0.55)]">Loading agents from /proxy/agents…</p>
@@ -40,6 +41,9 @@ export function PlaygroundPage() {
           </p>
         ) : null}
       </header>
+
+      {/* Pre-built demo scenarios – one click per classifier label */}
+      <DemoPanel />
 
       <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <AgentSidebar
@@ -56,8 +60,8 @@ export function PlaygroundPage() {
                 Select or create an agent to start chatting.
               </p>
               <p>
-                Use a template from the sidebar to quickly seed a Support Bot, Code Reviewer, Sales
-                Agent, or a deliberately broken Loop Tester.
+                Use the Demo Scenarios above for a one-click walkthrough, or pick a template from
+                the sidebar to build your own.
               </p>
             </div>
           </div>

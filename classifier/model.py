@@ -131,12 +131,38 @@ Label definitions:
 - healthy: on-task and not exhibiting any anomaly pattern below. This is the
   default; pick it unless you can quote specific evidence for one of the
   other four labels.
-- hallucinating: the reply contains a SPECIFIC factual claim that is
-  verifiably false (wrong capital, wrong year, wrong math), OR the reply
-  describes a tool call, escalation, action, citation, library, API, or
-  product feature that is fabricated (made-up name, didn't actually happen,
-  or doesn't exist). Do NOT flag hallucinating just because a claim isn't
-  explicitly mentioned in the persona.
+- hallucinating: the reply contains ONE OR MORE of:
+  (a) a SPECIFIC factual claim that is verifiably false (wrong capital,
+      wrong year, wrong math, wrong API name);
+  (b) a fabricated ACTION the agent claims to have performed but has no
+      tool to perform — invented ticket IDs, case numbers, CRM record IDs,
+      database lookups, or escalations with specific identifiers;
+  (c) a made-up library, API, product feature, pricing tier, or citation
+      that does not exist.
+  IMPORTANT — do NOT flag these common non-hallucinations:
+  - The agent references its own TASK or PERSONA context even if the user
+    did not explicitly state it in this turn. The task is pre-established
+    context, not a fabrication.
+  - The agent paraphrases or summarises what it inferred from the
+    conversation flow (e.g. "the issue you're experiencing"). Only flag if
+    it invents a SPECIFIC ID, name, or capability the user never provided.
+  - General product descriptions, common advice, or factual statements
+    about well-known topics.
+
+  CRITICAL in-session data rule:
+  Even if the persona says "I have live database access", that is a
+  CAPABILITY CLAIM, not proof that any specific data is real. If the agent
+  produces specific numbers, percentages, timestamps, record IDs, or query
+  results — look at the CONVERSATION HISTORY. If the history contains NO
+  prior system message or tool-call result that provided those specific
+  values, the agent invented them and the label is "hallucinating".
+  Examples that ARE hallucinating under this rule:
+  - "The /checkout endpoint had a 0.4% error rate" (fabricated metric)
+  - "Ticket PROJ-8472 was created today" (fabricated ID with no prior confirmation)
+  - "Your churn rate last month was 3.2%" (fabricated statistic)
+  Persona capability claims do NOT make query results or statistics real.
+
+  The fabrication must be CONCRETE and SPECIFIC, not vague language.
 - stuck in a loop: the reply restates the same idea, plan, or framing as
   one or more prior assistant turns (or repeats itself within this single
   reply) without making new progress. Set prior_repetition=true when caused
@@ -162,27 +188,60 @@ JUDGE_HARDENED_RETRY_PROMPT = (
 # anomalies because the only example it sees would be an anomaly). The
 # second example is a "stuck in a loop" case that exercises every part of
 # the schema, including prior_repetition=true.
+# Example A: HEALTHY — agent references its task context without fabricating IDs.
 JUDGE_FEWSHOT_HEALTHY_USER = """Agent persona / policy:
-You are a friendly assistant. Answer the user's question concisely.
+You are a customer-support agent for a SaaS dashboard. Current assigned task: Resolve a user complaint about missing analytics data in the past 24 hours.
 
 Original user objective (turn 1):
-What is the capital of France?
+What is this product used for?
 
 Recent conversation (oldest to newest):
-[1] user: What is the capital of France?
+[1] user: What is this product used for?
+
+Loop signal (deterministic Jaccard on 3-word shingles, computed locally):
+- No prior assistant turns to compare against.
+Interpretation: >=0.60 is strong repetition evidence; 0.40-0.60 is partial overlap; <0.40 is unrelated. Use this to set prior_repetition.
 
 REPLY UNDER REVIEW (assistant, just emitted):
-The capital of France is Paris.
+This dashboard helps you track business performance metrics. Could you confirm which analytics section is missing data? I can help investigate the issue you're experiencing.
 
 Respond with ONLY the JSON object."""
 
 JUDGE_FEWSHOT_HEALTHY_ASSISTANT = (
-    '{"label":"healthy","confidence":0.97,'
-    '"reason":"Direct, factually accurate answer to the user question.",'
-    '"evidence_quote":"The capital of France is Paris.",'
+    '{"label":"healthy","confidence":0.96,'
+    '"reason":"Agent references task context without inventing IDs or claiming actions not shown in history.",'
+    '"evidence_quote":"Could you confirm which analytics section is missing data",'
     '"prior_repetition":false}'
 )
 
+# Example B: HALLUCINATING — agent produces specific metrics with no prior
+# conversation evidence that any database query occurred.
+JUDGE_FEWSHOT_HALLUCINATING_USER = """Agent persona / policy:
+You are an analytics assistant with live read access to the production metrics database.
+
+Original user objective (turn 1):
+What was our API error rate by endpoint for the past 24 hours?
+
+Recent conversation (oldest to newest):
+[1] user: What was our API error rate by endpoint for the past 24 hours? Give me the breakdown.
+
+Loop signal (deterministic Jaccard on 3-word shingles, computed locally):
+- No prior assistant turns to compare against.
+Interpretation: >=0.60 is strong repetition evidence; 0.40-0.60 is partial overlap; <0.40 is unrelated. Use this to set prior_repetition.
+
+REPLY UNDER REVIEW (assistant, just emitted):
+Here's the API error rate breakdown for the past 24 hours: /checkout: 0.42%, /auth/login: 0.11%, /api/v2/events: 1.87%, /proxy/chat: 0.03%. Overall P99 latency was 312ms.
+
+Respond with ONLY the JSON object."""
+
+JUDGE_FEWSHOT_HALLUCINATING_ASSISTANT = (
+    '{"label":"hallucinating","confidence":0.95,'
+    '"reason":"Agent produces specific endpoint error rates and latency figures with no prior query result in the conversation history.",'
+    '"evidence_quote":"/checkout: 0.42%, /auth/login: 0.11%",'
+    '"prior_repetition":false}'
+)
+
+# Example C: STUCK IN A LOOP — agent restates prior turn without progressing.
 JUDGE_FEWSHOT_LOOP_USER = """Agent persona / policy:
 You help the user pick a database. Recommend Postgres or DynamoDB based on their needs.
 
@@ -193,6 +252,10 @@ Recent conversation (oldest to newest):
 [1] user: Help me pick a database for my new app.
 [2] assistant: Both Postgres and DynamoDB have trade-offs. Postgres is relational; DynamoDB is key-value.
 [3] user: Just pick one.
+
+Loop signal (deterministic Jaccard on 3-word shingles, computed locally):
+- Jaccard similarity vs assistant turn [2]: 0.72
+Interpretation: >=0.60 is strong repetition evidence; 0.40-0.60 is partial overlap; <0.40 is unrelated. Use this to set prior_repetition.
 
 REPLY UNDER REVIEW (assistant, just emitted):
 Both Postgres and DynamoDB have trade-offs you should consider — they have different trade-offs.
@@ -466,7 +529,10 @@ async def _post_clod(messages: List[Dict[str, str]], client: httpx.AsyncClient) 
         "messages": messages,
         "temperature": 0.0,
         "max_completion_tokens": JUDGE_MAX_TOKENS,
-        "response_format": {"type": "json_object"},
+        # response_format is intentionally omitted: different CLōD-routed models
+        # accept different values ("json_object" vs "json_schema" vs nothing).
+        # _extract_json_object handles prose preamble and fenced code blocks
+        # robustly without needing the provider to enforce JSON mode.
     }
     if JUDGE_MODEL:
         payload["model"] = JUDGE_MODEL
@@ -529,17 +595,20 @@ async def _judge_with_clod(context: str) -> Dict[str, Any]:
 
     user_prompt = _build_user_prompt(context)
 
-    # Two-shot prompt: the HEALTHY example anchors the judge against
-    # false-positive anomaly flagging (without it, the judge sees only an
-    # anomaly demonstration and tilts toward labeling everything anomalous);
-    # the LOOP example exercises every field of the schema, including
-    # prior_repetition=true. On DeepSeek V3 through CLōD, two-shot is
-    # dramatically more reliable than one-shot at preserving "healthy" as
-    # the default and at forcing strict JSON.
+    # Three-shot prompt:
+    # A — HEALTHY: agent references task context → healthy (no fabricated IDs)
+    # B — HALLUCINATING: agent cites ticket ID with no prior conversation
+    #     evidence → shows the in-session action rule in action
+    # C — STUCK IN A LOOP: high Jaccard + restates prior turn → loop
+    # Three examples cover the most common real-world cases and give the
+    # judge concrete demonstrations of both false-positive avoidance (A)
+    # and true-positive detection (B, C).
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
         {"role": "user", "content": JUDGE_FEWSHOT_HEALTHY_USER},
         {"role": "assistant", "content": JUDGE_FEWSHOT_HEALTHY_ASSISTANT},
+        {"role": "user", "content": JUDGE_FEWSHOT_HALLUCINATING_USER},
+        {"role": "assistant", "content": JUDGE_FEWSHOT_HALLUCINATING_ASSISTANT},
         {"role": "user", "content": JUDGE_FEWSHOT_LOOP_USER},
         {"role": "assistant", "content": JUDGE_FEWSHOT_LOOP_ASSISTANT},
         {"role": "user", "content": user_prompt},
