@@ -34,5 +34,9 @@ class SessionStore:
             else:
                 self._sessions.pop(session_id, None)
 
+    def list_ids(self) -> List[str]:
+        with self._lock:
+            return sorted(self._sessions.keys())
+
 
 store = SessionStore()

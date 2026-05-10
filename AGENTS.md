@@ -1,91 +1,120 @@
 # AGENTS.md — AgentSense
 
-> Project context for AI coding agents (Cursor, Claude Code, Codex, etc.).
-> Built for **Cursor Hackathon Vancouver · May 10, 2026** · Theme: *Build Something Agents Want*.
-> Source of truth for the human plan: `docs/agentsense_team_playbook.md`.
+Project context for AI coding agents (Cursor, Claude Code, Codex, etc.).
+Built for Cursor Hackathon Vancouver · May 10, 2026.
+Source of truth for team intent: `docs/agentsense_team_playbook.md`.
 
 ---
 
 ## What we're building
 
-**AgentSense** is a real-time behavioral health monitor for AI agents. It sits between any LLM
-application and the LLM API, intercepts every conversation turn, and uses an ML classifier to
-detect when an agent is **hallucinating, looping, going off-topic, or behaving anomalously** —
-before the user ever sees a bad output.
+AgentSense is a real-time behavioral health monitor for AI agents. It sits between
+an application and the LLM API, intercepts every turn, and classifies assistant
+behavior into:
 
-Target prizes: Grand Prize (Cursor), Best Use of Greptile, Best Use of CLōD.
+- `healthy`
+- `hallucinating`
+- `stuck in a loop`
+- `off-topic`
+- `refusing incorrectly`
+
+The objective is to catch failures before end-users do.
 
 ## Architecture
 
 ```
-User App → [proxy/ FastAPI] → CLōD LLM API
+User App → [proxy/ FastAPI + Socket.IO] → CLōD LLM API
                 ↓
-         [classifier/ ML model]
+        [classifier/ LLM judge]
                 ↓
-         [classifier/ SHAP explainer]
+       [classifier/ reason booster]
                 ↓
-   ┌────────────────────────────┐
-   │  dashboard/ (Socket.IO UI) │
-   └────────────────────────────┘
+ ┌────────────────────────────────────────┐
+ │ frontend/ React + TS + Recharts + PWA │
+ └────────────────────────────────────────┘
+                ↑
+   [GET /proxy/events + GET /proxy/sessions]
                 ↓
-       [greptile/ correlate code]
+      [greptile/ correlate code path]
                 ↓
-       [alerts/ OpenClaw → WhatsApp/Telegram]
+       [alerts/ OpenClaw notification]
 ```
 
 ## Tech stack
 
-- **Backend proxy**: FastAPI (Python 3.10+)
-- **ML classifier**: HuggingFace transformers (zero-shot `cross-encoder/nli-distilroberta-base`)
-- **Explainability**: SHAP (heuristic fallback for live demo speed)
-- **Real-time UI**: Socket.IO + vanilla HTML/JS
-- **Monitored LLM**: CLōD API
-- **Code correlation**: Greptile API
-- **Alerting**: OpenClaw (local) → WhatsApp/Telegram
+- Backend proxy: FastAPI (Python 3.10+), Socket.IO (`python-socketio`)
+- Judge classifier: CLōD API via `httpx` (strict-JSON scoring prompt)
+- Explainability: lightweight token/phrase reason booster
+- Frontend: Vite + React + TypeScript + Tailwind + shadcn-style primitives
+- Charts/state/realtime: Recharts + Zustand + Socket.IO client
+- PWA: `vite-plugin-pwa` (auto-update SW, cached `/proxy/events`)
+- Code correlation: Greptile API
+- Alerting: OpenClaw (Telegram/WhatsApp)
 
 ## Repo layout
 
 ```
 agentsense/
-├── AGENTS.md                ← you are here
+├── AGENTS.md
 ├── README.md
 ├── requirements.txt
 ├── .env.example
 ├── docs/
 │   └── agentsense_team_playbook.md
-├── proxy/                   ← Backend Engineer 1
-│   ├── main.py              FastAPI proxy + Socket.IO server (port 8000)
-│   └── session.py           Per-session conversation history
-├── classifier/              ← Ashish (ML lead)
-│   ├── model.py             FastAPI classifier service (port 8001)
-│   └── explainer.py         SHAP / heuristic token attribution
-├── alerts/                  ← Ashish
-│   └── openclaw.py          OpenClaw → Telegram/WhatsApp alert
-├── dashboard/               ← Backend Engineer 2
-│   ├── index.html           Live monitor UI
-│   └── socket_client.js     Socket.IO client
-└── greptile/                ← Backend Engineer 2
-    └── correlate.py         Map agent failures back to source code
+├── proxy/
+│   ├── main.py              FastAPI proxy + Socket.IO + hydration endpoints
+│   ├── session.py           In-memory chat history store
+│   └── events.py            Ring buffer for frontend hydration
+├── classifier/
+│   ├── model.py             LLM judge service (`/classify`)
+│   └── explainer.py         Optional reason booster
+├── alerts/
+│   └── openclaw.py
+├── frontend/
+│   ├── DESIGN.md            Visual source of truth (Swiss/minimal)
+│   ├── src/lib/{api,socket,store}.ts
+│   ├── src/components/*     cards, charts, feed, session views
+│   ├── src/pages/*          dashboard + session routes
+│   ├── tailwind.config.ts
+│   └── vite.config.ts       dev proxy + PWA config
+└── greptile/
+    └── correlate.py
 ```
 
-## Service contracts (don't break these)
+## Service contracts (do not break)
 
-### `POST /proxy/chat` — proxy → caller
+### `POST /proxy/chat`
+
 Request:
 ```json
 { "session_id": "string", "message": "string" }
 ```
+
 Response:
 ```json
-{ "reply": "string", "health": { "label": "...", "confidence": 0.0, "explanation": "..." } }
+{
+  "reply": "string",
+  "health": {
+    "label": "string",
+    "confidence": 0.0,
+    "explanation": "string",
+    "all_scores": { "label": 0.0 }
+  }
+}
 ```
 
-### `POST /classify` — proxy → classifier
+### `POST /classify`
+
 Request:
 ```json
-{ "session_id": "string", "history": [{"role":"...","content":"..."}], "latest_reply": "string" }
+{
+  "session_id": "string",
+  "history": [{ "role": "user|assistant", "content": "string" }],
+  "latest_reply": "string"
+}
 ```
-Response:
+
+Response (unchanged contract):
 ```json
 {
   "label": "healthy | hallucinating | stuck in a loop | off-topic | refusing incorrectly",
@@ -95,76 +124,103 @@ Response:
 }
 ```
 
-### `agent_event` — Socket.IO emit (proxy → dashboard)
+### `agent_event` (Socket.IO: proxy → frontend)
+
 ```json
 {
+  "id": "uuid",
   "session_id": "string",
   "message": "string",
   "label": "string",
   "confidence": 0.0,
   "explanation": "string",
-  "greptile_context": "optional file:line"
+  "greptile_context": "optional file:line",
+  "created_at": 1710000000000
 }
 ```
 
-## Run it locally
+### Hydration endpoints (new)
+
+`GET /proxy/events?session_id=...&limit=100`
+```json
+{ "events": [{ "...": "agent_event shape" }] }
+```
+
+`GET /proxy/sessions`
+```json
+{
+  "sessions": [
+    {
+      "session_id": "string",
+      "last_seen": 1710000000000,
+      "status": "healthy",
+      "event_count": 10,
+      "anomaly_count": 2
+    }
+  ],
+  "session_ids": ["demo-1", "demo-2"]
+}
+```
+
+## Run locally
 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in CLOD_API_KEY, GREPTILE_API_KEY
+cp .env.example .env
 
-# Terminal 1 — classifier
+# Terminal 1
 uvicorn classifier.model:app --port 8001
 
-# Terminal 2 — proxy + Socket.IO
+# Terminal 2
 uvicorn proxy.main:socket_app --port 8000
 
-# Terminal 3 — dashboard (any static server)
-python -m http.server 5500 --directory dashboard
-# open http://localhost:5500
+# Terminal 3
+cd frontend
+npm install
+npm run dev
+# open http://localhost:5173
 ```
 
-## Conventions for AI agents working on this repo
+## Environment variables
 
-1. **Keep services decoupled.** `proxy/`, `classifier/`, `alerts/`, `greptile/` must be runnable
-   independently. Cross-service calls go over HTTP, not Python imports.
-2. **Don't break the JSON contracts above.** The dashboard, proxy, and classifier are wired by
-   field names — rename a key, break the demo.
-3. **Optimize for demo, not production.** No auth, no DB, no retries. In-memory state is fine.
-4. **Fail soft.** Alerting/Greptile failures must never crash the proxy chat path. Wrap external
-   calls in try/except and log.
-5. **Secrets via env vars only.** Read `os.environ["CLOD_API_KEY"]`, `GREPTILE_API_KEY`, etc.
-   Never commit a real `.env`.
-6. **Async-first.** Use `httpx.AsyncClient`, not `requests`, anywhere on the proxy hot path.
-7. **Real-time budget**: per-turn classification should stay < 800 ms. If a model is slower,
-   fall back to the CLōD-as-classifier prompt (see playbook §Sprint 1).
-8. **Dashboard**: monospace, dark theme, color-coded labels (green=healthy, red=hallucinating,
-   yellow=stuck, purple=off-topic). Newest event on top.
-9. **Python style**: type hints on public functions, docstring on each FastAPI route.
-10. **No comments narrating obvious code.** Comment intent and trade-offs only.
+- `CLOD_API_URL`
+- `CLOD_API_KEY`
+- `JUDGE_MODEL` (optional override)
+- `CLASSIFIER_URL`
+- `GREPTILE_API_KEY`
+- `GREPTILE_REPO`
+- `GREPTILE_BRANCH`
+- `OPENCLAW_URL`
+- `OPENCLAW_CHANNEL`
 
-## Team & ownership
+## Implementation conventions for agents
+
+1. Keep `proxy/`, `classifier/`, `alerts/`, `greptile/` decoupled.
+2. Do not rename JSON fields in any contract above.
+3. Fail soft: external API failures must not crash `/proxy/chat`.
+4. Keep async on proxy hot paths (`httpx.AsyncClient`).
+5. Secrets only via env vars. Never commit a real `.env`.
+6. Frontend uses TypeScript strict mode and route-based composition.
+7. Realtime ingestion must stay centralized in `frontend/src/lib/socket.ts`.
+8. State source-of-truth is `frontend/src/lib/store.ts` (Zustand).
+9. Frontend styling follows `frontend/DESIGN.md`:
+   - minimal Swiss style
+   - grid-first layout
+   - no decorative clutter or gradients
+   - strong typography hierarchy
+10. Prefer shadcn-style primitives in `frontend/src/components/ui/` over ad-hoc styles.
+11. Mobile-first responsiveness is required (web-first, PWA installable).
+
+## Team ownership
 
 | Area | Owner | Files |
 |---|---|---|
-| ML classifier + SHAP + alerts | Ashish | `classifier/`, `alerts/` |
-| FastAPI proxy + sessions | Backend Engineer 1 | `proxy/` |
-| Dashboard + Greptile | Backend Engineer 2 | `dashboard/`, `greptile/` |
-
-## Demo trigger (do not remove)
-
-The hallucination-trigger prompt lives in the playbook (§Sprint 3). The classifier MUST flag
-this reliably — it's the live demo's wow moment.
-
-## Contingencies
-
-- **Classifier too slow** → swap to `CLASSIFY_PROMPT` against CLōD (see playbook).
-- **Greptile indexing slow** → drop `greptile_context` from socket event; mention as "see Devpost".
-- **OpenClaw alert fails** → fall back to pre-recorded notification clip.
-- **Wifi flaky** → cache one CLōD reply; classifier + dashboard still work locally.
+| Judge classifier + alerts | Ashish | `classifier/`, `alerts/` |
+| Proxy + history/hydration | Backend Engineer 1 | `proxy/` |
+| Frontend dashboard + Greptile | Backend Engineer 2 | `frontend/`, `greptile/` |
 
 ## References
 
-- Full plan, sprint-by-sprint code, and demo script: `docs/agentsense_team_playbook.md`
+- Team playbook and demo script: `docs/agentsense_team_playbook.md`
 - Contact: ashishdawar2@gmail.com
