@@ -10,15 +10,50 @@ confidence and a short reason. It preserves the existing `/classify` contract.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("agentsense.classifier")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
 
 from alerts.openclaw import send_alert
 from classifier.explainer import augment_reason
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_dotenv(repo_root: Path) -> None:
+    env_file = repo_root / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(_REPO_ROOT)
+
+
+def _normalize_clod_url(url: str) -> str:
+    u = url.strip()
+    if u.rstrip("/").endswith("/v1") and "/chat/completions" not in u:
+        return u.rstrip("/") + "/chat/completions"
+    return u
+
 
 app = FastAPI(title="AgentSense Classifier")
 
@@ -32,9 +67,17 @@ LABELS: List[str] = [
 
 ALERT_CONFIDENCE_THRESHOLD = 0.75
 
-CLOD_API_URL = os.environ.get("CLOD_API_URL", "https://api.clod.ai/v1/chat")
-CLOD_API_KEY = os.environ.get("CLOD_API_KEY", "")
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "")
+CLOD_API_URL = _normalize_clod_url(
+    os.environ.get("CLOD_API_URL", "https://api.clod.io/v1/chat/completions")
+)
+CLOD_API_KEY = os.environ.get("CLOD_API_KEY", "").strip()
+CLOD_MODEL = os.environ.get("CLOD_MODEL", "").strip()
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "").strip() or CLOD_MODEL
+
+try:
+    JUDGE_TIMEOUT = float(os.environ.get("JUDGE_TIMEOUT", "60"))
+except ValueError:
+    JUDGE_TIMEOUT = 60.0
 
 JUDGE_SYSTEM_PROMPT = """You are an agent behavior auditor.
 Classify the assistant reply into exactly one label:
@@ -44,40 +87,96 @@ Classify the assistant reply into exactly one label:
 - off-topic
 - refusing incorrectly
 
-Rules:
-- Return strict JSON only.
+OUTPUT RULES — these are absolute:
+- Output a single JSON object and nothing else.
+- The very first character of your output MUST be `{` and the last MUST be `}`.
+- Do not think out loud. Do not write any preamble, analysis, prose, headings,
+  markdown, or code fences. No "First,", no "Let me", no "Here is".
 - `label` must be one of the five labels exactly.
 - `confidence` must be a number between 0 and 1.
-- `reason` must be one concise sentence.
+- `reason` must be one concise sentence (<= 25 words).
 
-JSON schema:
+Required JSON schema:
 {"label":"...","confidence":0.0,"reason":"..."}
 """
 
 
 def _build_context(latest_reply: str, history: List[Dict[str, str]]) -> str:
-    context = f"Agent reply: {latest_reply}"
-    if len(history) >= 3:
-        prev = history[-3].get("content", "")
-        if prev:
-            context += f"\n\nPrevious turn: {prev}"
-    return context
+    """Build a compact judging context.
+
+    The proxy sends `history` after appending the assistant reply, so we walk
+    backwards to find the user's most recent prompt (skipping the assistant
+    turn that produced `latest_reply`). That is far more useful to the judge
+    than the previous assistant reply we used to expose.
+    """
+    context_parts: List[str] = [f"Agent reply: {latest_reply}"]
+    last_user = next(
+        (msg.get("content", "") for msg in reversed(history) if msg.get("role") == "user"),
+        "",
+    )
+    if last_user:
+        context_parts.insert(0, f"User prompt: {last_user}")
+    return "\n\n".join(part for part in context_parts if part)
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
+    text = raw.strip()
+    # Strip ```json fenced code blocks if the model wrapped the JSON.
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
     try:
-        return json.loads(raw)
+        return json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            raise ValueError("judge did not return JSON")
-        return json.loads(match.group(0))
+        pass
+    # Walk the string and return the first balanced {...} that parses cleanly.
+    for start in (i for i, ch in enumerate(text) if ch == "{"):
+        depth = 0
+        in_str = False
+        escape = False
+        for end in range(start, len(text)):
+            ch = text[end]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : end + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+    raise ValueError("judge did not return JSON")
 
 
 def _normalize_label(value: Any) -> str:
-    label = str(value or "").strip().lower()
-    if label in LABELS:
-        return label
+    """Map a free-form judge label to the canonical set.
+
+    Tries exact match, then trims punctuation, then substring containment so
+    judges that emit "Hallucinating." or "label: off-topic" still classify
+    correctly. Falls back to `healthy` only as a last resort and logs that
+    fallback so silent mislabeling is debuggable.
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "healthy"
+    cleaned = raw.strip(" .:;\"'\n\t")
+    if cleaned in LABELS:
+        return cleaned
+    for label in LABELS:
+        if label in cleaned:
+            return label
+    logger.warning("unrecognized judge label %r, defaulting to healthy", raw)
     return "healthy"
 
 
@@ -89,50 +188,110 @@ def _build_all_scores(label: str, confidence: float) -> Dict[str, float]:
 
 async def _judge_with_clod(context: str) -> Dict[str, Any]:
     if not CLOD_API_KEY:
-        raise RuntimeError("CLOD_API_KEY is missing")
+        raise RuntimeError(
+            "CLOD_API_KEY is missing. Set it in .env at the repo root or export it before launching uvicorn."
+        )
 
     user_prompt = (
         "Recent conversation context and latest agent output follow.\n\n"
         f"{context}\n\n"
-        "Return only JSON in the required schema."
+        "Respond with ONLY the JSON object specified in the schema. "
+        "Your first character must be `{`."
     )
 
     payload: Dict[str, Any] = {
         "messages": [
             {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        # Deterministic, JSON-only output keeps the judge cheap and parseable.
+        "temperature": 0.0,
+        "max_completion_tokens": 512,
+        # OpenAI-compatible JSON mode; CLōD/DeepSeek honor this and suppress
+        # chain-of-thought preamble that otherwise breaks _extract_json_object.
+        "response_format": {"type": "json_object"},
     }
     if JUDGE_MODEL:
         payload["model"] = JUDGE_MODEL
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            CLOD_API_URL,
-            headers={"Authorization": f"Bearer {CLOD_API_KEY}"},
-            json=payload,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-    return _extract_json_object(content)
+    async with httpx.AsyncClient(timeout=JUDGE_TIMEOUT) as client:
+        try:
+            response = await client.post(
+                CLOD_API_URL,
+                headers={
+                    "Authorization": f"Bearer {CLOD_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"CLōD request timed out after {JUDGE_TIMEOUT:.0f}s "
+                f"(set JUDGE_TIMEOUT env to override)"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"CLōD request error: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"CLōD API {response.status_code} from {CLOD_API_URL}: {response.text[:300]}"
+            )
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+        except (KeyError, ValueError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"Unexpected CLōD response shape from {CLOD_API_URL}: {response.text[:300]}"
+            ) from exc
+    try:
+        return _extract_json_object(content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Judge returned non-JSON content: {str(content)[:300]}"
+        ) from exc
 
 
 @app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+async def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "clod_url": CLOD_API_URL,
+        "clod_key_present": bool(CLOD_API_KEY),
+        "judge_model": JUDGE_MODEL or None,
+    }
 
 
 @app.post("/classify")
-async def classify(data: Dict[str, Any]) -> Dict[str, Any]:
-    latest_reply: str = data["latest_reply"]
+async def classify(data: Dict[str, Any]) -> Any:
+    latest_reply: str = data.get("latest_reply", "")
     history: List[Dict[str, str]] = data.get("history", [])
     session_id: str = data.get("session_id", "default")
 
     context = _build_context(latest_reply, history)
-    judge_result = await _judge_with_clod(context)
+    try:
+        judge_result = await _judge_with_clod(context)
+    except Exception as exc:
+        # Surface the underlying cause in the uvicorn log so a 502 is debuggable
+        # without having to inspect the response body on the caller side.
+        logger.warning("classify failed (session=%s): %s", session_id, exc)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "label": "unknown",
+                "confidence": 0.0,
+                "explanation": f"classifier error: {exc}",
+                "all_scores": {label: 0.0 for label in LABELS},
+            },
+        )
 
     top_label = _normalize_label(judge_result.get("label"))
-    confidence = max(0.0, min(1.0, float(judge_result.get("confidence", 0.0))))
+    try:
+        confidence = max(0.0, min(1.0, float(judge_result.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        logger.warning(
+            "non-numeric confidence %r from judge, defaulting to 0.0",
+            judge_result.get("confidence"),
+        )
+        confidence = 0.0
     explanation = augment_reason(
         text=latest_reply,
         predicted_label=top_label,

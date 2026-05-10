@@ -171,15 +171,12 @@ function ChatBubble({ turn }: { turn: ChatTurn }) {
             classifier reasoning
           </summary>
           <p className="mt-1 rounded-[4px] border border-[rgba(0,161,224,0.18)] bg-[rgba(0,161,224,0.04)] p-2 leading-relaxed text-[rgba(51,51,51,0.7)]">
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      const message = draft;
-      if (!message.trim()) return;
-      setDraft("");
-      void sendUserMessage(runtime.agent.agent_id, message);
-    }
-  };
+            {turn.health.explanation}
+          </p>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function PendingBubble() {

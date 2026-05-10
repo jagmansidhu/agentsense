@@ -48,6 +48,10 @@ CLOD_MODEL = os.environ.get("CLOD_MODEL", "DeepSeek V3").strip()
 CLOD_TEMPERATURE = float(os.environ.get("CLOD_TEMPERATURE", "0.7"))
 CLOD_MAX_TOKENS_RAW = os.environ.get("CLOD_MAX_COMPLETION_TOKENS")
 CLASSIFIER_URL = os.environ.get("CLASSIFIER_URL", "http://localhost:8001/classify")
+try:
+    CLASSIFIER_TIMEOUT = float(os.environ.get("CLASSIFIER_TIMEOUT", "65"))
+except ValueError:
+    CLASSIFIER_TIMEOUT = 65.0
 
 if CLOD_MAX_TOKENS_RAW is None or CLOD_MAX_TOKENS_RAW == "":
     CLOD_MAX_COMPLETION_TOKENS: int | None = None
@@ -175,7 +179,9 @@ async def proxy_chat(request: Request) -> JSONResponse:
         "explanation": "classifier unreachable",
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Must exceed the classifier's own upstream timeout (60s by default) or
+        # the proxy will report "classifier error" before the judge can answer.
+        async with httpx.AsyncClient(timeout=CLASSIFIER_TIMEOUT) as client:
             cls_resp = await client.post(
                 CLASSIFIER_URL,
                 json={
@@ -184,8 +190,16 @@ async def proxy_chat(request: Request) -> JSONResponse:
                     "latest_reply": agent_reply,
                 },
             )
-            cls_resp.raise_for_status()
+        # Try to use the body regardless of status: the classifier returns a
+        # well-shaped JSON envelope (with `label`, `confidence`, `explanation`,
+        # `all_scores`) on its 502 path — we want to surface that to the dashboard
+        # instead of replacing it with a generic HTTPStatusError message.
+        try:
             classification_raw = cls_resp.json()
+        except ValueError:
+            classification_raw["explanation"] = (
+                f"classifier HTTP {cls_resp.status_code}: {cls_resp.text[:300]}"
+            )
     except Exception as exc:
         classification_raw["explanation"] = f"classifier error: {exc}"
 
