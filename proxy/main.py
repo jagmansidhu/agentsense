@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from proxy.agents import registry as agent_registry
 from proxy.events import events
 from proxy.session import store
 
@@ -100,7 +101,11 @@ def _shape_health(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.post("/proxy/chat")
 async def proxy_chat(request: Request) -> JSONResponse:
-    """Forward chat to CLōD, classify the reply, and broadcast to the dashboard."""
+    """Forward chat to CLōD, classify the reply, and broadcast to the dashboard.
+
+    Optional `agent_id` selects a registered agent; its system prompt and task are
+    prepended to the messages and its model/temperature override the defaults.
+    """
     if not CLOD_API_KEY:
         raise HTTPException(status_code=500, detail="CLOD_API_KEY is not configured")
 
@@ -110,13 +115,31 @@ async def proxy_chat(request: Request) -> JSONResponse:
     if user_message is None or not str(user_message).strip():
         raise HTTPException(status_code=400, detail="message is required")
 
+    agent_id_raw = body.get("agent_id")
+    agent = None
+    if agent_id_raw is not None and str(agent_id_raw).strip():
+        agent = agent_registry.get(str(agent_id_raw).strip())
+        if agent is None:
+            raise HTTPException(status_code=404, detail=f"agent '{agent_id_raw}' not found")
+
     user_message = str(user_message).strip()
     history: List[Dict[str, str]] = store.append(session_id, {"role": "user", "content": user_message})
 
+    messages: List[Dict[str, str]] = list(history)
+    if agent is not None:
+        composed = agent.composed_system_prompt()
+        if composed:
+            messages = [{"role": "system", "content": composed}, *messages]
+
+    chosen_model = agent.model if (agent and agent.model) else CLOD_MODEL
+    chosen_temperature = (
+        agent.temperature if (agent and agent.temperature is not None) else CLOD_TEMPERATURE
+    )
+
     llm_payload: Dict[str, Any] = {
-        "model": CLOD_MODEL,
-        "messages": history,
-        "temperature": CLOD_TEMPERATURE,
+        "model": chosen_model,
+        "messages": messages,
+        "temperature": chosen_temperature,
     }
     if CLOD_MAX_COMPLETION_TOKENS is not None:
         llm_payload["max_completion_tokens"] = CLOD_MAX_COMPLETION_TOKENS
@@ -168,20 +191,30 @@ async def proxy_chat(request: Request) -> JSONResponse:
 
     health = _shape_health(classification_raw)
 
-    event = events.append(
-        {
-            "session_id": session_id,
-            "user_message": user_message,
-            "message": agent_reply,
-            "label": health.get("label"),
-            "confidence": health.get("confidence"),
-            "explanation": health.get("explanation"),
-        },
-    )
+    event_payload: Dict[str, Any] = {
+        "session_id": session_id,
+        "user_message": user_message,
+        "message": agent_reply,
+        "label": health.get("label"),
+        "confidence": health.get("confidence"),
+        "explanation": health.get("explanation"),
+    }
+    if agent is not None:
+        event_payload["agent_id"] = agent.agent_id
+        event_payload["agent_name"] = agent.name
+
+    event = events.append(event_payload)
 
     await sio.emit("agent_event", event)
 
-    return JSONResponse({"reply": agent_reply, "health": health})
+    return JSONResponse(
+        {
+            "reply": agent_reply,
+            "health": health,
+            "agent_id": agent.agent_id if agent else None,
+            "session_id": session_id,
+        }
+    )
 
 
 @app.get("/proxy/events")
@@ -210,3 +243,50 @@ async def reset(request: Request) -> Dict[str, str]:
     store.reset(session_id)
     events.reset(session_id)
     return {"status": "reset"}
+
+
+# ── Agent registry ─────────────────────────────────────────────────────────
+# These endpoints power the multi-agent playground in the dashboard. Agents
+# are persona+task wrappers around `/proxy/chat`; deleting one drops only the
+# registry entry, not the captured event/session history.
+
+
+@app.get("/proxy/agents")
+async def list_agents() -> Dict[str, Any]:
+    return {"agents": agent_registry.list()}
+
+
+@app.post("/proxy/agents")
+async def create_agent(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+    try:
+        agent = agent_registry.create(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(agent.to_dict(), status_code=201)
+
+
+@app.patch("/proxy/agents/{agent_id}")
+async def update_agent(agent_id: str, request: Request) -> Dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+    agent = agent_registry.update(agent_id, body)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
+    return agent.to_dict()
+
+
+@app.delete("/proxy/agents/{agent_id}")
+async def delete_agent(agent_id: str) -> Dict[str, str]:
+    if not agent_registry.delete(agent_id):
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
+    return {"status": "deleted", "agent_id": agent_id}

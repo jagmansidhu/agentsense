@@ -150,12 +150,20 @@ export function LandingPage() {
             <li><a href="#contact" className="cursor-pointer transition-all hover:text-[var(--business-blue)]">Contact</a></li>
           </ul>
 
-          <Link
-            to="/monitor"
-            className="cursor-pointer transition-all rounded-[4px] border border-transparent bg-[var(--business-blue)] px-4 py-2 text-sm font-semibold text-white shadow-[var(--shadow-light)] hover:-translate-y-px hover:brightness-95 hover:shadow-[0_8px_20px_rgba(0,161,224,0.28)]"
-          >
-            Open Monitor
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/monitor/playground"
+              className="cursor-pointer transition-all rounded-[4px] border border-[rgba(0,161,224,0.35)] bg-white px-4 py-2 text-sm font-semibold text-[var(--business-blue)] shadow-[var(--shadow-light)] hover:-translate-y-px hover:bg-[rgba(0,161,224,0.06)]"
+            >
+              Try Playground
+            </Link>
+            <Link
+              to="/monitor"
+              className="cursor-pointer transition-all rounded-[4px] border border-transparent bg-[var(--business-blue)] px-4 py-2 text-sm font-semibold text-white shadow-[var(--shadow-light)] hover:-translate-y-px hover:brightness-95 hover:shadow-[0_8px_20px_rgba(0,161,224,0.28)]"
+            >
+              Open Monitor
+            </Link>
+          </div>
         </nav>
       </header>
 

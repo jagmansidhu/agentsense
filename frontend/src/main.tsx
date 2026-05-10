@@ -6,6 +6,7 @@ import App from "./App";
 import { LandingPage } from "./pages/LandingPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SessionPage } from "./pages/SessionPage";
+import { PlaygroundPage } from "./pages/PlaygroundPage";
 import "./styles/globals.css";
 
 registerSW({ immediate: true });
@@ -20,6 +21,7 @@ const router = createBrowserRouter([
     element: <App />,
     children: [
       { index: true, element: <DashboardPage /> },
+      { path: "playground", element: <PlaygroundPage /> },
       { path: "session/:sessionId", element: <SessionPage /> },
       { path: "session", element: <Navigate to="/monitor/session/all" replace /> },
     ],
