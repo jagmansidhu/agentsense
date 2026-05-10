@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.py[cod]
@@ -36,3 +37,6 @@ frontend/.vite/
 ~/.cache/huggingface/
 *.pt
 *.bin
+=======
+.env
+>>>>>>> d66dd41 (Adding classifier test)
