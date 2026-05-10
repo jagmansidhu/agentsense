@@ -1,0 +1,29 @@
+# Optional infra for AgentSense persistence.
+#
+# Spin up:
+#   docker compose up -d db
+#
+# Then in your .env:
+#   DATABASE_URL=postgresql+psycopg://agentsense:agentsense@127.0.0.1:5432/agentsense
+
+services:
+  db:
+    image: postgres:16
+    container_name: agentsense-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentsense
+      POSTGRES_PASSWORD: agentsense
+      POSTGRES_DB: agentsense
+    ports:
+      - "5432:5432"
+    volumes:
+      - agentsense_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentsense -d agentsense"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  agentsense_pg_data:

@@ -17,10 +17,12 @@ export function DashboardPage() {
   const sessions = useDashboardStore((state) => state.sessions);
   const selectedSessionId = useDashboardStore((state) => state.selectedSessionId);
   const setSelectedSessionId = useDashboardStore((state) => state.setSelectedSessionId);
+  const selectedOrigin = useDashboardStore((state) => state.selectedOrigin);
+  const setSelectedOrigin = useDashboardStore((state) => state.setSelectedOrigin);
   const hydrate = useDashboardStore((state) => state.hydrate);
   const loading = useDashboardStore((state) => state.loading);
   const error = useDashboardStore((state) => state.error);
-  const visibleEvents = getVisibleEvents(events, selectedSessionId);
+  const visibleEvents = getVisibleEvents(events, selectedSessionId, selectedOrigin);
   const [selectedIssueId, setSelectedIssueId] = useState<string>("");
 
   useEffect(() => {
@@ -47,7 +49,7 @@ export function DashboardPage() {
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 rounded-[4px] border border-[rgba(51,51,51,0.12)] bg-white p-4 shadow-[0_2px_12px_rgba(0,0,0,0.06)] md:grid-cols-[1fr_auto_auto]">
+      <div className="grid gap-3 rounded-[4px] border border-[rgba(51,51,51,0.12)] bg-white p-4 shadow-[0_2px_12px_rgba(0,0,0,0.06)] md:grid-cols-[1fr_auto_auto_auto]">
         <div className="grid gap-1">
           <p className="text-xs uppercase tracking-[0.12em] text-[rgba(51,51,51,0.6)]">scope</p>
           <p className="text-sm text-[var(--dark-grey)]">
@@ -58,10 +60,22 @@ export function DashboardPage() {
                 : "Live mode hydrated from /proxy/events"}
           </p>
           <p className="text-xs text-[rgba(51,51,51,0.65)]">
-            Connection: {connectionStatus} · Data source: {dataSource}
+            Connection: {connectionStatus} · Data source: {dataSource} · Origin: {selectedOrigin}
           </p>
           {error ? <p className="text-xs text-[rgb(220,38,38)]">{error}</p> : null}
         </div>
+        <select
+          className="h-10 rounded-[4px] border border-[rgba(51,51,51,0.18)] bg-white px-3 text-sm text-[var(--dark-grey)]"
+          value={selectedOrigin}
+          onChange={(event) =>
+            setSelectedOrigin(event.target.value as "all" | "ui" | "external" | "cursor")
+          }
+        >
+          <option value="all">all origins</option>
+          <option value="ui">ui (playground)</option>
+          <option value="external">external</option>
+          <option value="cursor">cursor</option>
+        </select>
         <select
           className="h-10 rounded-[4px] border border-[rgba(51,51,51,0.18)] bg-white px-3 text-sm text-[var(--dark-grey)]"
           value={selectedSessionId}

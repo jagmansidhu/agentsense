@@ -1,5 +1,6 @@
 import type { AgentEvent, HealthLabel } from "../types";
 import { HealthBadge } from "./HealthBadge";
+import { OriginPill } from "./OriginPill";
 
 interface Props {
   event: AgentEvent;
@@ -23,7 +24,15 @@ export function EventCard({ event }: Props) {
       style={{ borderLeft: `3px solid ${accentColor}` }}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <HealthBadge label={event.label} />
+        <div className="flex flex-wrap items-center gap-2">
+          <HealthBadge label={event.label} />
+          <OriginPill origin={event.origin} />
+          {event.agent_name ? (
+            <span className="text-xs font-medium text-[rgba(51,51,51,0.7)]">
+              {event.agent_name}
+            </span>
+          ) : null}
+        </div>
         <span className="text-xs text-[rgba(51,51,51,0.5)]">
           {event.session_id} · {new Date(event.created_at).toLocaleTimeString()}
         </span>

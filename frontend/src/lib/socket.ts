@@ -1,5 +1,5 @@
 import { io } from "socket.io-client";
-import type { AgentEvent, HealthLabel } from "../types";
+import type { AgentEvent, EventOrigin, HealthLabel } from "../types";
 import { useDashboardStore } from "./store";
 
 const SOCKET_URL = import.meta.env.VITE_PROXY_URL ?? "http://localhost:8000";
@@ -16,6 +16,14 @@ const normalizeLabel = (value: string | undefined): HealthLabel => {
     return normalized;
   }
   return "unknown";
+};
+
+const normalizeOrigin = (value: string | undefined): EventOrigin => {
+  const normalized = (value ?? "").toLowerCase().trim();
+  if (normalized === "ui" || normalized === "external" || normalized === "cursor") {
+    return normalized;
+  }
+  return "ui";
 };
 
 export const socket = io(SOCKET_URL, {
@@ -47,10 +55,14 @@ export function startSocket() {
       id: payload.id ?? crypto.randomUUID(),
       session_id: payload.session_id ?? "default",
       message: payload.message ?? "",
+      user_message: payload.user_message,
       label: normalizeLabel(payload.label),
       confidence: Number(payload.confidence ?? 0),
       explanation: payload.explanation ?? "No explanation provided",
       greptile_context: payload.greptile_context,
+      agent_id: payload.agent_id,
+      agent_name: payload.agent_name,
+      origin: normalizeOrigin(payload.origin),
       created_at: Number(payload.created_at ?? Date.now()),
     };
     useDashboardStore.getState().addEvent(event);

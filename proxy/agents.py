@@ -18,6 +18,11 @@ import uuid
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import select
+
+from proxy import db as dbmod
+from proxy.models import AgentRow
+
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -73,11 +78,33 @@ class Agent:
 
 
 class AgentRegistry:
-    """Thread-safe in-memory CRUD for agents."""
+    """Thread-safe in-memory CRUD for agents, optionally backed by the DB."""
 
     def __init__(self) -> None:
         self._agents: Dict[str, Agent] = {}
         self._lock = Lock()
+        self._hydrated = False
+
+    def hydrate_from_db(self) -> int:
+        if not dbmod.is_enabled() or self._hydrated:
+            return 0
+        with dbmod.get_session() as session:
+            rows = session.execute(select(AgentRow)).scalars().all()
+        with self._lock:
+            self._agents.clear()
+            for row in rows:
+                self._agents[row.agent_id] = Agent(
+                    agent_id=row.agent_id,
+                    name=row.name,
+                    description=row.description or "",
+                    system_prompt=row.system_prompt or "",
+                    task=row.task or "",
+                    model=row.model,
+                    temperature=row.temperature,
+                    created_at=row.created_at,
+                )
+            self._hydrated = True
+        return len(rows)
 
     def list(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -98,7 +125,6 @@ class AgentRegistry:
 
         with self._lock:
             if agent_id in self._agents:
-                # Disambiguate by suffix instead of failing the demo.
                 agent_id = f"{agent_id}-{uuid.uuid4().hex[:6]}"
 
             agent = Agent(
@@ -111,6 +137,7 @@ class AgentRegistry:
                 temperature=_clean_optional_float(payload.get("temperature")),
             )
             self._agents[agent_id] = agent
+        self._persist(agent)
         return agent
 
     def update(self, agent_id: str, payload: Dict[str, Any]) -> Optional[Agent]:
@@ -125,15 +152,51 @@ class AgentRegistry:
                 agent.model = _clean_optional_str(payload.get("model"))
             if "temperature" in payload:
                 agent.temperature = _clean_optional_float(payload.get("temperature"))
-            return agent
+        self._persist(agent)
+        return agent
 
     def delete(self, agent_id: str) -> bool:
         with self._lock:
-            return self._agents.pop(agent_id, None) is not None
+            removed = self._agents.pop(agent_id, None)
+        if removed is None:
+            return False
+        if dbmod.is_enabled():
+            try:
+                with dbmod.get_session() as session:
+                    session.query(AgentRow).filter(AgentRow.agent_id == agent_id).delete()
+            except Exception:
+                pass
+        return True
 
     def reset(self) -> None:
         with self._lock:
             self._agents.clear()
+        if dbmod.is_enabled():
+            try:
+                with dbmod.get_session() as session:
+                    session.query(AgentRow).delete()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _persist(agent: Agent) -> None:
+        if not dbmod.is_enabled():
+            return
+        try:
+            with dbmod.get_session() as session:
+                row = AgentRow(
+                    agent_id=agent.agent_id,
+                    name=agent.name,
+                    description=agent.description,
+                    system_prompt=agent.system_prompt,
+                    task=agent.task,
+                    model=agent.model,
+                    temperature=agent.temperature,
+                    created_at=agent.created_at,
+                )
+                session.merge(row)
+        except Exception:
+            pass
 
 
 def _clean_optional_str(value: Any) -> Optional[str]:

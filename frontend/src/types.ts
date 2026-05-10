@@ -6,6 +6,8 @@ export type HealthLabel =
   | "refusing incorrectly"
   | "unknown";
 
+export type EventOrigin = "ui" | "external" | "cursor";
+
 export interface AgentEvent {
   id: string;
   session_id: string;
@@ -17,6 +19,7 @@ export interface AgentEvent {
   greptile_context?: string;
   agent_id?: string;
   agent_name?: string;
+  origin?: EventOrigin;
   created_at: number;
 }
 
@@ -63,6 +66,7 @@ export interface SessionSummary {
   status: HealthLabel;
   event_count: number;
   anomaly_count: number;
+  origin?: EventOrigin;
 }
 
 export interface ProxyEventsResponse {

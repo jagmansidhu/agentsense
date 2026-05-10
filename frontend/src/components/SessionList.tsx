@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import type { SessionSummary } from "../types";
 import { cn } from "../lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { OriginPill } from "./OriginPill";
 
 interface Props {
   sessions: SessionSummary[];
@@ -33,7 +34,10 @@ export function SessionList({ sessions }: Props) {
                   : "border-[rgba(51,51,51,0.12)] bg-white text-[var(--dark-grey)] hover:bg-[rgba(0,161,224,0.04)]",
               )}
             >
-              <span className="font-medium">{session.session_id}</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-medium">{session.session_id}</span>
+                <OriginPill origin={session.origin} />
+              </div>
               <span
                 className={cn(
                   "text-xs",

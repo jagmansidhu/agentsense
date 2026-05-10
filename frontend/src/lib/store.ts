@@ -1,21 +1,24 @@
 import { create } from "zustand";
 import { fetchEvents, fetchSessions } from "./api";
 import { getMockEvents, getMockSessions } from "./mockData";
-import type { AgentEvent, HealthLabel, SessionSummary } from "../types";
+import type { AgentEvent, EventOrigin, HealthLabel, SessionSummary } from "../types";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type DataSource = "live" | "mock";
+export type OriginFilter = "all" | EventOrigin;
 
 interface DashboardState {
   connectionStatus: ConnectionStatus;
   dataSource: DataSource;
   selectedSessionId: string;
+  selectedOrigin: OriginFilter;
   events: AgentEvent[];
   sessions: SessionSummary[];
   loading: boolean;
   error: string | null;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setSelectedSessionId: (sessionId: string) => void;
+  setSelectedOrigin: (origin: OriginFilter) => void;
   addEvent: (event: AgentEvent) => void;
   setEvents: (events: AgentEvent[]) => void;
   setSessions: (sessions: SessionSummary[]) => void;
@@ -29,12 +32,14 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   connectionStatus: "connecting",
   dataSource: "live",
   selectedSessionId: "all",
+  selectedOrigin: "all",
   events: [],
   sessions: [],
   loading: false,
   error: null,
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setSelectedSessionId: (sessionId) => set({ selectedSessionId: sessionId }),
+  setSelectedOrigin: (origin) => set({ selectedOrigin: origin }),
   addEvent: (event) =>
     set((state) => ({
       dataSource: "live",
@@ -102,10 +107,17 @@ export const useDashboardStore = create<DashboardState>((set) => ({
 export const getVisibleEvents = (
   events: AgentEvent[],
   selectedSession: string,
-): AgentEvent[] =>
-  selectedSession === "all"
-    ? events
-    : events.filter((event) => event.session_id === selectedSession);
+  selectedOrigin: OriginFilter = "all",
+): AgentEvent[] => {
+  let visible = events;
+  if (selectedSession !== "all") {
+    visible = visible.filter((event) => event.session_id === selectedSession);
+  }
+  if (selectedOrigin !== "all") {
+    visible = visible.filter((event) => (event.origin ?? "ui") === selectedOrigin);
+  }
+  return visible;
+};
 
 export const getSessionIds = (events: AgentEvent[]): string[] =>
   ["all", ...new Set(events.map((event) => event.session_id))];

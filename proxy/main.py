@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from proxy import db as dbmod
 from proxy.agents import registry as agent_registry
 from proxy.events import events
 from proxy.session import store
@@ -82,9 +83,51 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 socket_app = socketio.ASGIApp(sio, app)
 
 
+@app.on_event("startup")
+def _startup() -> None:
+    if dbmod.is_enabled():
+        dbmod.init_db()
+        agent_registry.hydrate_from_db()
+        events.hydrate_from_db()
+
+
 @app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+async def health() -> Dict[str, Any]:
+    return {"status": "ok", "persistence": dbmod.describe()}
+
+
+VALID_ORIGINS = {"ui", "external", "cursor"}
+
+
+def _normalize_origin(value: Any, default: str = "ui") -> str:
+    candidate = str(value or default).strip().lower()
+    return candidate if candidate in VALID_ORIGINS else default
+
+
+async def _classify(
+    session_id: str, history: List[Dict[str, str]], latest_reply: str
+) -> Dict[str, Any]:
+    """Best-effort POST to the classifier; returns a degraded shape on failure."""
+    classification: Dict[str, Any] = {
+        "label": "unknown",
+        "confidence": 0.0,
+        "explanation": "classifier unreachable",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            cls_resp = await client.post(
+                CLASSIFIER_URL,
+                json={
+                    "session_id": session_id,
+                    "history": history,
+                    "latest_reply": latest_reply,
+                },
+            )
+            cls_resp.raise_for_status()
+            classification = cls_resp.json()
+    except Exception as exc:
+        classification["explanation"] = f"classifier error: {exc}"
+    return classification
 
 
 def _shape_health(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,30 +212,12 @@ async def proxy_chat(request: Request) -> JSONResponse:
 
     history = store.append(session_id, {"role": "assistant", "content": agent_reply})
 
-    classification_raw: Dict[str, Any] = {
-        "label": "unknown",
-        "confidence": 0.0,
-        "explanation": "classifier unreachable",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            cls_resp = await client.post(
-                CLASSIFIER_URL,
-                json={
-                    "session_id": session_id,
-                    "history": history,
-                    "latest_reply": agent_reply,
-                },
-            )
-            cls_resp.raise_for_status()
-            classification_raw = cls_resp.json()
-    except Exception as exc:
-        classification_raw["explanation"] = f"classifier error: {exc}"
-
+    classification_raw = await _classify(session_id, history, agent_reply)
     health = _shape_health(classification_raw)
 
     event_payload: Dict[str, Any] = {
         "session_id": session_id,
+        "origin": "ui",
         "user_message": user_message,
         "message": agent_reply,
         "label": health.get("label"),
@@ -217,13 +242,92 @@ async def proxy_chat(request: Request) -> JSONResponse:
     )
 
 
+@app.post("/proxy/ingest")
+async def proxy_ingest(request: Request) -> JSONResponse:
+    """Accept a pre-completed turn from an external agent runtime.
+
+    Use this when something else (a Cursor agent, a CI bot, your own Python
+    script) already produced the assistant reply and just wants AgentSense to
+    classify, persist, and broadcast it. The proxy does not call CLōD here.
+
+    Body:
+        {
+          "session_id": str,
+          "agent_id": str?,
+          "agent_name": str?,
+          "origin": "external" | "cursor" | "ui"?,
+          "user_message": str?,
+          "assistant_message": str  (alias: "message"),
+          "metadata": object?
+        }
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+
+    session_id = str(body.get("session_id") or "default").strip() or "default"
+    assistant_message = body.get("assistant_message")
+    if assistant_message is None:
+        assistant_message = body.get("message")
+    if assistant_message is None or not str(assistant_message).strip():
+        raise HTTPException(status_code=400, detail="assistant_message is required")
+    assistant_message = str(assistant_message).strip()
+
+    user_message_raw = body.get("user_message")
+    user_message = str(user_message_raw).strip() if user_message_raw is not None else None
+
+    origin = _normalize_origin(body.get("origin"), default="external")
+
+    agent_id_raw = body.get("agent_id")
+    agent_id = str(agent_id_raw).strip() if agent_id_raw else None
+    agent_name_raw = body.get("agent_name")
+    agent_name = str(agent_name_raw).strip() if agent_name_raw else None
+
+    # Track this conversation in the in-process session store too so future
+    # /proxy/chat calls with the same session_id pick up where we left off.
+    if user_message:
+        store.append(session_id, {"role": "user", "content": user_message})
+    history = store.append(session_id, {"role": "assistant", "content": assistant_message})
+
+    classification_raw = await _classify(session_id, history, assistant_message)
+    health = _shape_health(classification_raw)
+
+    event_payload: Dict[str, Any] = {
+        "session_id": session_id,
+        "origin": origin,
+        "user_message": user_message,
+        "message": assistant_message,
+        "label": health.get("label"),
+        "confidence": health.get("confidence"),
+        "explanation": health.get("explanation"),
+    }
+    if agent_id:
+        event_payload["agent_id"] = agent_id
+    if agent_name:
+        event_payload["agent_name"] = agent_name
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        event_payload["metadata"] = metadata
+
+    event = events.append(event_payload)
+    await sio.emit("agent_event", event)
+
+    return JSONResponse({"event": event, "health": health}, status_code=201)
+
+
 @app.get("/proxy/events")
 async def get_events(
     session_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
+    origin: str | None = Query(default=None),
 ) -> Dict[str, Any]:
     """Return recent events for dashboard hydration and reconnect."""
-    return {"events": events.list_events(session_id=session_id, limit=limit)}
+    return {
+        "events": events.list_events(session_id=session_id, limit=limit, origin=origin),
+    }
 
 
 @app.get("/proxy/sessions")
