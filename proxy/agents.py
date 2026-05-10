@@ -147,9 +147,12 @@ def _clean_optional_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return None
+    if not (0.0 <= result <= 2.0):
+        raise ValueError(f"temperature must be between 0.0 and 2.0, got {result}")
+    return result
 
 
 registry = AgentRegistry()
