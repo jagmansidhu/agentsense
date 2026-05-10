@@ -1,8 +1,7 @@
-"""Explain *why* the classifier flagged a response.
+"""Reason booster for the LLM judge output.
 
-Token-level heuristics used for live-demo speed. Real SHAP KernelExplainer is
-too slow for sub-second inference; we keep the API stable so we can swap it in
-later without touching the rest of the system.
+The judge already returns a one-sentence reason. This module optionally appends
+token or phrase hints so operators can quickly spot why a label was assigned.
 """
 
 from __future__ import annotations
@@ -30,11 +29,7 @@ LOOP_SIGNALS = (
 )
 
 
-def get_explanation(text: str, predicted_label: str) -> str:
-    """Return a human-readable reason for the flag."""
-    if predicted_label == "healthy":
-        return "No anomaly signals detected."
-
+def _hint_tokens(text: str, predicted_label: str) -> List[str]:
     flagged: List[str] = []
     lower = text.lower()
     words = [w.lower().rstrip(".,;:!?") for w in text.split()]
@@ -43,7 +38,19 @@ def get_explanation(text: str, predicted_label: str) -> str:
         flagged = [w for w in words if w in HALLUCINATION_SIGNALS]
     elif predicted_label == "stuck in a loop":
         flagged = [f'"{p}"' for p in LOOP_SIGNALS if p in lower]
+    return sorted(set(flagged))
 
-    if flagged:
-        return f"Flagged tokens: {', '.join(sorted(set(flagged)))}"
-    return f"Model confidence: {predicted_label} based on overall response pattern"
+
+def augment_reason(text: str, predicted_label: str, reason: str) -> str:
+    """Return judge reason with lightweight token hints when available."""
+    base = reason.strip() or "No reason provided."
+    hints = _hint_tokens(text=text, predicted_label=predicted_label)
+    if not hints:
+        return base
+    return f"{base} | signals: {', '.join(hints)}"
+
+
+def get_explanation(text: str, predicted_label: str) -> str:
+    """Backward-compatible helper retained for existing callers."""
+    default_reason = "No anomaly signals detected." if predicted_label == "healthy" else ""
+    return augment_reason(text=text, predicted_label=predicted_label, reason=default_reason)
