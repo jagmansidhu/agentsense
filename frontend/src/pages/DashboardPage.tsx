@@ -4,7 +4,7 @@ import { AnomalyChart } from "../components/AnomalyChart";
 import { EventFeed } from "../components/EventFeed";
 import { LabelDonut } from "../components/LabelDonut";
 import { StatsBar } from "../components/StatsBar";
-import { useDashboardStore } from "../lib/store";
+import { getVisibleEvents, useDashboardStore } from "../lib/store";
 
 export function DashboardPage() {
   const events = useDashboardStore((state) => state.events);
@@ -15,6 +15,7 @@ export function DashboardPage() {
   const hydrate = useDashboardStore((state) => state.hydrate);
   const loading = useDashboardStore((state) => state.loading);
   const error = useDashboardStore((state) => state.error);
+  const visibleEvents = getVisibleEvents(events, selectedSessionId);
 
   useEffect(() => {
     void hydrate(selectedSessionId);
@@ -43,21 +44,25 @@ export function DashboardPage() {
           ))}
         </select>
         <Link
-          to={sessions[0] ? `/session/${encodeURIComponent(sessions[0].session_id)}` : "/session/all"}
+          to={
+            sessions[0]
+              ? `/monitor/session/${encodeURIComponent(sessions[0].session_id)}`
+              : "/monitor/session/all"
+          }
           className="inline-flex h-10 items-center justify-center border border-zinc-700 bg-zinc-950 px-4 text-sm uppercase tracking-[0.08em] text-zinc-200 transition-colors hover:bg-zinc-900"
         >
           open sessions
         </Link>
       </div>
 
-      <StatsBar status={status} events={events} />
+      <StatsBar status={status} events={visibleEvents} />
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <AnomalyChart events={events} />
-        <LabelDonut events={events} />
+        <AnomalyChart events={visibleEvents} />
+        <LabelDonut events={visibleEvents} />
       </div>
 
-      <EventFeed events={events} />
+      <EventFeed events={visibleEvents} />
     </div>
   );
 }

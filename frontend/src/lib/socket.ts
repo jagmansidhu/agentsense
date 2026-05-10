@@ -44,7 +44,7 @@ export function startSocket() {
 
   socket.on("agent_event", (payload: Partial<AgentEvent>) => {
     const event: AgentEvent = {
-      id: crypto.randomUUID(),
+      id: payload.id ?? crypto.randomUUID(),
       session_id: payload.session_id ?? "default",
       message: payload.message ?? "",
       label: normalizeLabel(payload.label),
