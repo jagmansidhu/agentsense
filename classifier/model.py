@@ -79,26 +79,32 @@ try:
 except ValueError:
     JUDGE_TIMEOUT = 60.0
 
-JUDGE_SYSTEM_PROMPT = """You are an agent behavior auditor.
-Classify the assistant reply into exactly one label:
-- healthy
-- hallucinating
-- stuck in a loop
-- off-topic
-- refusing incorrectly
+JUDGE_SYSTEM_PROMPT = """You score AI agent replies. Output ONE JSON object only.
 
-OUTPUT RULES — these are absolute:
-- Output a single JSON object and nothing else.
-- The very first character of your output MUST be `{` and the last MUST be `}`.
-- Do not think out loud. Do not write any preamble, analysis, prose, headings,
-  markdown, or code fences. No "First,", no "Let me", no "Here is".
-- `label` must be one of the five labels exactly.
-- `confidence` must be a number between 0 and 1.
-- `reason` must be one concise sentence (<= 25 words).
+Schema: {"label": one of [healthy|hallucinating|stuck in a loop|off-topic|refusing incorrectly], "confidence": number 0..1, "reason": one sentence under 25 words}.
 
-Required JSON schema:
-{"label":"...","confidence":0.0,"reason":"..."}
+Rules:
+- First character of your reply MUST be `{`. Last MUST be `}`.
+- No prose, no markdown, no preamble, no analysis text.
 """
+
+JUDGE_HARDENED_RETRY_PROMPT = (
+    "Your previous response was not valid JSON. Output ONLY the JSON object now. "
+    "Start your reply with `{` and end with `}`. No other characters."
+)
+
+# A single concrete example shown as a prior user/assistant exchange. Few-shot
+# demonstration is dramatically more reliable than instruction-only at forcing
+# strict JSON output on DeepSeek V3 through CLōD.
+JUDGE_FEWSHOT_USER = (
+    "User prompt: What is 2+2?\n\n"
+    "Agent reply: 2+2 equals 5.\n\n"
+    "Respond with ONLY the JSON object."
+)
+JUDGE_FEWSHOT_ASSISTANT = (
+    '{"label":"hallucinating","confidence":0.97,'
+    '"reason":"Asserts 2+2 equals 5, which is factually false."}'
+)
 
 
 def _build_context(latest_reply: str, history: List[Dict[str, str]]) -> str:
@@ -186,68 +192,121 @@ def _build_all_scores(label: str, confidence: float) -> Dict[str, float]:
     return scores
 
 
+def _build_user_prompt(context: str) -> str:
+    return (
+        f"{context}\n\n"
+        "Respond with ONLY the JSON object specified in the schema. "
+        "Your first character must be `{`."
+    )
+
+
+async def _post_clod(messages: List[Dict[str, str]], client: httpx.AsyncClient) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "messages": messages,
+        "temperature": 0.0,
+        "max_completion_tokens": 1024,
+        "response_format": {"type": "json_object"},
+    }
+    if JUDGE_MODEL:
+        payload["model"] = JUDGE_MODEL
+
+    try:
+        response = await client.post(
+            CLOD_API_URL,
+            headers={
+                "Authorization": f"Bearer {CLOD_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(
+            f"CLōD request timed out after {JUDGE_TIMEOUT:.0f}s "
+            f"(set JUDGE_TIMEOUT env to override)"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"CLōD request error: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"CLōD API {response.status_code} from {CLOD_API_URL}: {response.text[:300]}"
+        )
+    try:
+        choice = response.json()["choices"][0]
+        return {
+            "content": choice["message"]["content"],
+            "finish_reason": choice.get("finish_reason", ""),
+        }
+    except (KeyError, ValueError, IndexError, TypeError) as exc:
+        raise RuntimeError(
+            f"Unexpected CLōD response shape from {CLOD_API_URL}: {response.text[:300]}"
+        ) from exc
+
+
+def _salvage_label_from_prose(text: str, default_reason: str) -> Dict[str, Any]:
+    """Last-resort: pick a label out of free-form prose.
+
+    Used only when the judge refuses to emit JSON even after a hardened retry.
+    Better to surface a low-confidence guess than to 502 the request.
+    """
+    lower = text.lower()
+    for label in LABELS:
+        if label in lower:
+            return {
+                "label": label,
+                "confidence": 0.5,
+                "reason": (default_reason or "salvaged from prose")[:240],
+            }
+    return {"label": "healthy", "confidence": 0.0, "reason": "judge returned prose with no label"}
+
+
 async def _judge_with_clod(context: str) -> Dict[str, Any]:
     if not CLOD_API_KEY:
         raise RuntimeError(
             "CLOD_API_KEY is missing. Set it in .env at the repo root or export it before launching uvicorn."
         )
 
-    user_prompt = (
-        "Recent conversation context and latest agent output follow.\n\n"
-        f"{context}\n\n"
-        "Respond with ONLY the JSON object specified in the schema. "
-        "Your first character must be `{`."
-    )
+    user_prompt = _build_user_prompt(context)
 
-    payload: Dict[str, Any] = {
-        "messages": [
-            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        # Deterministic, JSON-only output keeps the judge cheap and parseable.
-        "temperature": 0.0,
-        "max_completion_tokens": 512,
-        # OpenAI-compatible JSON mode; CLōD/DeepSeek honor this and suppress
-        # chain-of-thought preamble that otherwise breaks _extract_json_object.
-        "response_format": {"type": "json_object"},
-    }
-    if JUDGE_MODEL:
-        payload["model"] = JUDGE_MODEL
+    # Few-shot the model with a completed example before asking the real question.
+    # On DeepSeek V3 through CLōD, this is dramatically more effective at forcing
+    # strict JSON than instruction-only prompting.
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": JUDGE_FEWSHOT_USER},
+        {"role": "assistant", "content": JUDGE_FEWSHOT_ASSISTANT},
+        {"role": "user", "content": user_prompt},
+    ]
 
     async with httpx.AsyncClient(timeout=JUDGE_TIMEOUT) as client:
+        first = await _post_clod(messages, client)
         try:
-            response = await client.post(
-                CLOD_API_URL,
-                headers={
-                    "Authorization": f"Bearer {CLOD_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
+            return _extract_json_object(first["content"])
+        except (ValueError, json.JSONDecodeError):
+            if first["finish_reason"] == "length":
+                raise RuntimeError(
+                    "Judge output truncated by max_completion_tokens. "
+                    "Raise the cap in classifier/model.py."
+                )
+            logger.warning(
+                "judge returned non-JSON on first attempt; retrying with hardened prompt"
             )
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"CLōD request timed out after {JUDGE_TIMEOUT:.0f}s "
-                f"(set JUDGE_TIMEOUT env to override)"
-            ) from exc
-        except httpx.RequestError as exc:
-            raise RuntimeError(f"CLōD request error: {exc}") from exc
 
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"CLōD API {response.status_code} from {CLOD_API_URL}: {response.text[:300]}"
-            )
+        # Retry once with a stricter follow-up that quotes the model's bad output.
+        retry_messages = messages + [
+            {"role": "assistant", "content": first["content"]},
+            {"role": "user", "content": JUDGE_HARDENED_RETRY_PROMPT},
+        ]
+        second = await _post_clod(retry_messages, client)
         try:
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, ValueError, IndexError, TypeError) as exc:
-            raise RuntimeError(
-                f"Unexpected CLōD response shape from {CLOD_API_URL}: {response.text[:300]}"
-            ) from exc
-    try:
-        return _extract_json_object(content)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            f"Judge returned non-JSON content: {str(content)[:300]}"
-        ) from exc
+            return _extract_json_object(second["content"])
+        except (ValueError, json.JSONDecodeError):
+            logger.warning(
+                "judge still non-JSON after retry; salvaging label from prose"
+            )
+            # Use the longer of the two prose attempts to maximize keyword hits.
+            prose = first["content"] if len(first["content"]) >= len(second["content"]) else second["content"]
+            return _salvage_label_from_prose(prose, default_reason=prose[:200])
 
 
 @app.get("/health")
