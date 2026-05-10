@@ -39,27 +39,27 @@ const ISSUE_GUIDANCE: Record<
   { title: string; fix: string; priority: "high" | "medium" | "low" }
 > = {
   hallucinating: {
-    title: "Hallucinated Business Claim",
+    title: "Hallucinated answer",
     fix:
-      "Restrict replies to known CRM fields, require citations in generated answers, and add a low-confidence fallback response.",
+      "Ground replies in retrieved context, require citations, and add a low-confidence fallback that asks a clarifying question instead of asserting facts.",
     priority: "high",
   },
   "stuck in a loop": {
-    title: "Looping Response Pattern",
+    title: "Repeating itself",
     fix:
-      "Add loop-break logic after repeated intents, inject a fresh task summary, and force next-step planning tokens.",
+      "Detect repeated phrasing across turns, inject a fresh task summary, and force the next response to commit to a recommendation or tool call.",
     priority: "medium",
   },
   "off-topic": {
-    title: "Context Drift",
+    title: "Drifted off task",
     fix:
-      "Re-anchor the system prompt to user objective, include current session goal in every turn, and validate topic alignment before respond.",
+      "Re-inject the original user objective into the system prompt and validate topic alignment before sending the reply downstream.",
     priority: "medium",
   },
   "refusing incorrectly": {
-    title: "Over-Strict Refusal",
+    title: "Over-cautious refusal",
     fix:
-      "Tune refusal policy boundaries and add a safe-completion pathway for benign business requests.",
+      "Loosen the refusal policy for benign requests and add a safe-completion pathway so the agent still helps when the topic is non-sensitive.",
     priority: "medium",
   },
 };
@@ -120,10 +120,21 @@ export function summarizeAgentMetrics(events: AgentEvent[]): {
   averageHealth: number;
   averageConfidence: number;
   openIssues: number;
+  totalEvents: number;
+  agentCount: number;
+  anomalyRate: number;
 } {
   const snapshots = buildAgentSnapshots(events);
+  const totalEvents = events.length;
   if (snapshots.length === 0) {
-    return { averageHealth: 0, averageConfidence: 0, openIssues: 0 };
+    return {
+      averageHealth: 0,
+      averageConfidence: 0,
+      openIssues: 0,
+      totalEvents: 0,
+      agentCount: 0,
+      anomalyRate: 0,
+    };
   }
 
   const averageHealth =
@@ -131,6 +142,15 @@ export function summarizeAgentMetrics(events: AgentEvent[]): {
   const averageConfidence =
     snapshots.reduce((sum, snapshot) => sum + snapshot.averageConfidence, 0) / snapshots.length;
   const openIssues = snapshots.reduce((sum, snapshot) => sum + snapshot.openIssues, 0);
+  const anomalyEvents = events.filter((event) => isAnomaly(event.label)).length;
+  const anomalyRate = totalEvents === 0 ? 0 : anomalyEvents / totalEvents;
 
-  return { averageHealth, averageConfidence, openIssues };
+  return {
+    averageHealth,
+    averageConfidence,
+    openIssues,
+    totalEvents,
+    agentCount: snapshots.length,
+    anomalyRate,
+  };
 }

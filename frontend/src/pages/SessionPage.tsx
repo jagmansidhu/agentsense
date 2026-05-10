@@ -24,7 +24,7 @@ export function SessionPage() {
   return (
     <div className="grid gap-4">
       <Link
-        to="/monitor"
+        to="/"
         className="text-xs uppercase tracking-[0.12em] text-[rgba(51,51,51,0.6)] hover:text-[var(--business-blue)]"
       >
         back to dashboard

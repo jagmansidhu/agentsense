@@ -20,7 +20,7 @@ export function SessionList({ sessions }: Props) {
           <p className="text-sm text-[rgba(51,51,51,0.65)]">No active sessions yet.</p>
         ) : null}
         {sessions.map((session) => {
-          const href = `/monitor/session/${encodeURIComponent(session.session_id)}`;
+          const href = `/session/${encodeURIComponent(session.session_id)}`;
           const active = location.pathname === href;
           return (
             <Link
