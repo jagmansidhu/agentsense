@@ -17,22 +17,29 @@ export function SessionList({ sessions }: Props) {
       </CardHeader>
       <CardContent className="grid gap-2">
         {sessions.length === 0 ? (
-          <p className="text-sm text-zinc-500">No active sessions yet.</p>
+          <p className="text-sm text-[rgba(51,51,51,0.65)]">No active sessions yet.</p>
         ) : null}
         {sessions.map((session) => {
-          const href = `/session/${encodeURIComponent(session.session_id)}`;
+          const href = `/monitor/session/${encodeURIComponent(session.session_id)}`;
           const active = location.pathname === href;
           return (
             <Link
               key={session.session_id}
               to={href}
               className={cn(
-                "grid gap-1 border border-zinc-800 px-3 py-2 text-sm transition-colors",
-                active ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950/70 text-zinc-200 hover:bg-zinc-900",
+                "grid gap-1 rounded-[4px] border px-3 py-2 text-sm transition-all",
+                active
+                  ? "border-[var(--business-blue)] bg-[rgba(0,161,224,0.08)] text-[var(--dark-grey)]"
+                  : "border-[rgba(51,51,51,0.12)] bg-white text-[var(--dark-grey)] hover:bg-[rgba(0,161,224,0.04)]",
               )}
             >
               <span className="font-medium">{session.session_id}</span>
-              <span className={cn("text-xs", active ? "text-zinc-700" : "text-zinc-500")}>
+              <span
+                className={cn(
+                  "text-xs",
+                  active ? "text-[rgba(51,51,51,0.7)]" : "text-[rgba(51,51,51,0.6)]",
+                )}
+              >
                 {session.event_count} events · {session.status}
               </span>
             </Link>

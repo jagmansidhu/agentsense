@@ -1,15 +1,32 @@
 @import "tailwindcss";
 
 :root {
-  --background: 220 16% 8%;
-  --foreground: 220 10% 95%;
-  --border: 220 16% 22%;
-  --muted: 220 14% 18%;
-  --muted-foreground: 220 10% 66%;
+  --business-blue: #00a1e0;
+  --white: #ffffff;
+  --dark-grey: #333333;
+  --light-grey: #f2f2f2;
+  --ai-glow: rgba(0, 161, 224, 0.3);
+  --font-business: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --shadow-light: 0 2px 5px rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --success-green: #008000;
+  --warm-orange: #ffa500;
+  --accent-purple: #800080;
+
+  /* Semantic for Tailwind utilities */
+  --background: 0 0% 100%;
+  --foreground: 0 0% 20%;
+  --border: 0 0% 86%;
+  --muted: 0 0% 95%;
+  --muted-foreground: 0 0% 45%;
 }
 
 * {
-  border-color: hsl(var(--border));
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 html,
@@ -19,12 +36,63 @@ body,
 }
 
 body {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  background-color: var(--light-grey);
+  background-image: linear-gradient(to bottom, #f8f8f8, #ffffff);
+  color: var(--dark-grey);
+  font-family: var(--font-business);
   -webkit-font-smoothing: antialiased;
 }
 
-code {
+code,
+pre {
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+/* ── Entry animation ────────────────────────────────────── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fadeUp 420ms ease-out both;
+}
+
+/* Stagger helpers for lists */
+.stagger-1 { animation-delay: 80ms; }
+.stagger-2 { animation-delay: 160ms; }
+.stagger-3 { animation-delay: 240ms; }
+
+/* ── AI glow ────────────────────────────────────────────── */
+.ai-glow {
+  box-shadow:
+    0 0 0 1px rgba(0, 161, 224, 0.18),
+    0 8px 24px var(--ai-glow);
+}
+
+/* ── Glass surface ──────────────────────────────────────── */
+.glass-surface {
+  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.88);
+  border-bottom: 1px solid rgba(0, 161, 224, 0.14);
+}
+
+/* ── Scrollbar ──────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 161, 224, 0.22);
+  border-radius: 99px;
 }

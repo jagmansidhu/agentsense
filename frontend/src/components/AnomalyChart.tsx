@@ -23,8 +23,7 @@ export function AnomalyChart({ events }: Props) {
       .getMinutes()
       .toString()
       .padStart(2, "0")}`;
-    const increment = isAnomaly(event.label) ? 1 : 0;
-    byMinute.set(key, (byMinute.get(key) ?? 0) + increment);
+    byMinute.set(key, (byMinute.get(key) ?? 0) + (isAnomaly(event.label) ? 1 : 0));
   }
   const chartData = Array.from(byMinute.entries())
     .map(([minute, anomalies]) => ({ minute, anomalies }))
@@ -34,22 +33,43 @@ export function AnomalyChart({ events }: Props) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>anomalies per minute</CardTitle>
+        <CardTitle>anomalies over time</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-              <XAxis dataKey="minute" tick={{ fill: "#a1a1aa", fontSize: 11 }} />
-              <YAxis allowDecimals={false} tick={{ fill: "#a1a1aa", fontSize: 11 }} />
-              <Tooltip />
+            <LineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+              <CartesianGrid stroke="rgba(51,51,51,0.08)" strokeDasharray="4 4" />
+              <XAxis
+                dataKey="minute"
+                tick={{ fill: "rgba(51,51,51,0.45)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fill: "rgba(51,51,51,0.45)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "#fff",
+                  border: "1px solid rgba(0,161,224,0.2)",
+                  borderRadius: 4,
+                  boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+                  fontSize: 12,
+                  color: "#333",
+                }}
+                cursor={{ stroke: "rgba(0,161,224,0.2)", strokeWidth: 1 }}
+              />
               <Line
                 type="monotone"
                 dataKey="anomalies"
-                stroke="#f87171"
+                stroke="#00a1e0"
                 strokeWidth={2}
-                dot={false}
+                dot={{ fill: "#00a1e0", r: 3, strokeWidth: 0 }}
+                activeDot={{ r: 5, fill: "#00a1e0", strokeWidth: 0 }}
               />
             </LineChart>
           </ResponsiveContainer>

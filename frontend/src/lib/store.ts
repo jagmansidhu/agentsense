@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import { fetchEvents, fetchSessions } from "./api";
+import { getMockEvents, getMockSessions } from "./mockData";
 import type { AgentEvent, HealthLabel, SessionSummary } from "../types";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
+type DataSource = "live" | "mock";
 
 interface DashboardState {
   connectionStatus: ConnectionStatus;
+  dataSource: DataSource;
   selectedSessionId: string;
   events: AgentEvent[];
   sessions: SessionSummary[];
@@ -24,6 +27,7 @@ const MAX_EVENTS = 400;
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   connectionStatus: "connecting",
+  dataSource: "live",
   selectedSessionId: "all",
   events: [],
   sessions: [],
@@ -33,6 +37,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setSelectedSessionId: (sessionId) => set({ selectedSessionId: sessionId }),
   addEvent: (event) =>
     set((state) => ({
+      dataSource: "live",
       events: [event, ...state.events].slice(0, MAX_EVENTS),
       sessions: (() => {
         const existing = state.sessions.find((session) => session.session_id === event.session_id);
@@ -75,13 +80,19 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       set({
         events: eventsResponse.events,
         sessions: sessionsResponse.sessions,
+        dataSource: "live",
         loading: false,
         error: null,
       });
-    } catch (error) {
+    } catch {
+      const mockEvents = getMockEvents(sessionId, 200);
+      const mockSessions = getMockSessions();
       set({
+        events: mockEvents,
+        sessions: mockSessions,
+        dataSource: "mock",
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to hydrate dashboard state",
+        error: null,
       });
     }
   },

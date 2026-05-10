@@ -3,16 +3,18 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
 
 const badgeVariants = cva(
-  "inline-flex items-center border px-2 py-0.5 text-[11px] uppercase tracking-[0.12em] font-semibold",
+  "inline-flex items-center rounded-[4px] border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em]",
   {
     variants: {
       variant: {
-        neutral: "border-zinc-700 text-zinc-200",
-        healthy: "border-emerald-500/60 text-emerald-300",
-        hallucinating: "border-red-500/60 text-red-300",
-        stuck: "border-amber-500/60 text-amber-300",
-        offTopic: "border-violet-500/60 text-violet-300",
-        refusing: "border-sky-500/60 text-sky-300",
+        neutral: "border-[rgba(51,51,51,0.25)] bg-[rgba(51,51,51,0.04)] text-[var(--dark-grey)]",
+        healthy: "border-[rgba(0,128,0,0.35)] bg-[rgba(0,128,0,0.08)] text-[var(--success-green)]",
+        hallucinating:
+          "border-[rgba(220,38,38,0.35)] bg-[rgba(220,38,38,0.08)] text-[rgb(220,38,38)]",
+        stuck: "border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.1)] text-[rgb(180,83,9)]",
+        offTopic:
+          "border-[rgba(128,0,128,0.35)] bg-[rgba(128,0,128,0.08)] text-[var(--accent-purple)]",
+        refusing: "border-[rgba(0,161,224,0.35)] bg-[rgba(0,161,224,0.08)] text-[var(--business-blue)]",
       },
     },
     defaultVariants: {
