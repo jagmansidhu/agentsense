@@ -42,7 +42,6 @@ export function PlaygroundPage() {
         ) : null}
       </header>
 
-      {/* Pre-built demo scenarios – one click per classifier label */}
       <DemoPanel />
 
       <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
@@ -60,8 +59,8 @@ export function PlaygroundPage() {
                 Select or create an agent to start chatting.
               </p>
               <p>
-                Use the Demo Scenarios above for a one-click walkthrough, or pick a template from
-                the sidebar to build your own.
+                Use a template from the sidebar to quickly seed a Support Bot, Code Reviewer, Sales
+                Agent, or a deliberately broken Loop Tester.
               </p>
             </div>
           </div>
