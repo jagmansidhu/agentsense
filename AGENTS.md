@@ -209,6 +209,10 @@ npm run dev
 - `CLOD_API_KEY`
 - `JUDGE_MODEL` (optional override)
 - `CLASSIFIER_URL`
+- `JUDGE_HISTORY_TURNS` (optional, default `6`) — how many recent turns the judge sees.
+- `JUDGE_MAX_TOKENS` (optional, default `4096`) — judge output cap; raise if you see truncation.
+- `JUDGE_TIMEOUT` (optional, default `60`) — seconds before the judge call gives up.
+- `AGENTSENSE_DB_PATH` (optional) — path to a SQLite file. Unset = in-memory; set = persistent sessions + events across restarts.
 - `GREPTILE_API_KEY`
 - `GREPTILE_REPO`
 - `GREPTILE_BRANCH`
@@ -256,3 +260,10 @@ Keep entries brief and append-only.
 - 2026-05-10: Tightened `scripts/test_clod_chat.py` into a deterministic PASS/FAIL smoke test (`Paris` one-word check, low temperature, truncation guard).
 - 2026-05-10: Smoke test: higher default `max_completion_tokens`, shorter prompts, optional `CLOD_SMOKE_MAX_TOKENS`; accept `Paris` on last line if model adds a short preamble.
 - 2026-05-10: Proxy: `.env` auto-load from repo root, CLōD URL normalization, CORS for dashboard `fetch`, optional `CLOD_*` generation envs; `agent_event` includes `user_message`. Dashboard chat form POSTs `/proxy/chat`.
+- 2026-05-10: Frontend: removed standalone landing page; `/` is now the dashboard, `/playground` and `/session/:id` move under root (old `/monitor/*` URLs redirect). Dashboard redesigned: KPI strip (4 cards) → graphs at the top → agents in scope + issue queue → issue detail → event feed. Mock data and issue copy rewritten to match the AI-agent observability use case (no more CRM/sales narrative).
+- 2026-05-10: Classifier: judge now receives full context — agent persona/task, original user objective, last `JUDGE_HISTORY_TURNS` (default 6) turns, and the reply under review clearly delimited. Schema extended with optional `evidence_quote` (≤120 chars) and `prior_repetition` (bool); both fold into `explanation` so the public `/classify` contract (`label`, `confidence`, `explanation`, `all_scores`) is unchanged. Proxy forwards `agent.composed_system_prompt()` as `agent_system_prompt`.
+- 2026-05-10: Classifier: bumped judge output cap from 1024 → 4096 (env-tunable via `JUDGE_MAX_TOKENS`) to stop CLōD-routed reasoning models from getting truncated mid-JSON.
+- 2026-05-10: Repo cleanup: removed stale Sprint-1 carry-overs (`classifier.py` orphan that shadowed the `classifier/` package, `test_classifier.py` standalone script, `proxy/BE1_CHECKLIST.md`); deleted untracked junk (`#/` accidental venv, empty `alembic/` stub, all `__pycache__/` and `frontend/dist/`); resolved unmerged conflict markers in `.gitignore`. All imports and frontend typecheck clean afterward.
+- 2026-05-10: Classifier: fixed false-positive "hallucinating" labels on healthy first-turn replies. System prompt rewritten with explicit "default to healthy" rule, tightened the hallucinating definition to require *specific* verifiably-false or fabricated content (silence in the persona is no longer evidence), dropped the "must commit to a next step" gate from healthy. Switched judge to two-shot prompting (healthy example before the loop example) so the model has a positive baseline to anchor against.
+- 2026-05-10: Classifier: hybrid loop detection. Computes a deterministic Jaccard similarity score (3-word shingles) between the reply under review and prior assistant turns within the same window the judge sees, plus an intra-reply self-similarity (catches single-turn loops like "I apologize. Let me fix. I apologize. Let me fix."). The signal is rendered as evidence in the prompt with an interpretation guide so the judge sets `prior_repetition` against hard numbers instead of guessing.
+- 2026-05-10: Proxy: optional SQLite persistence via `AGENTSENSE_DB_PATH`. Unset → original in-memory `SessionStore` / `EventStore` (zero setup, fastest). Set → `SqliteSessionStore` / `SqliteEventStore` persist sessions + events to the given file across restarts. Stdlib `sqlite3` only — no new deps. WAL mode + per-call connections keep it thread-safe under uvicorn workers. New `proxy/db.py` houses the schema and connection helper.

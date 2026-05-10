@@ -178,6 +178,10 @@ async def proxy_chat(request: Request) -> JSONResponse:
         "confidence": 0.0,
         "explanation": "classifier unreachable",
     }
+    # Forward the active agent's persona + task so the classifier can judge
+    # "refusing incorrectly" against actual policy. Empty string is fine — the
+    # classifier falls back to judging on the conversation alone.
+    agent_persona = agent.composed_system_prompt() if agent is not None else ""
     try:
         # Must exceed the classifier's own upstream timeout (60s by default) or
         # the proxy will report "classifier error" before the judge can answer.
@@ -188,6 +192,7 @@ async def proxy_chat(request: Request) -> JSONResponse:
                     "session_id": session_id,
                     "history": history,
                     "latest_reply": agent_reply,
+                    "agent_system_prompt": agent_persona,
                 },
             )
         # Try to use the body regardless of status: the classifier returns a
