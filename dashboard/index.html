@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AgentSense — Live Monitor</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      padding: 24px;
+      margin: 0;
+    }
+    h2 { margin: 0 0 8px; font-weight: 600; }
+    #status { color: #22c55e; margin-bottom: 8px; font-size: 13px; }
+    #counter { color: #888; margin-bottom: 20px; font-size: 12px; }
+    .event {
+      margin: 12px 0;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border-left: 4px solid #333;
+      background: #161616;
+    }
+    .healthy        { border-color: #22c55e; background: #052a0f; }
+    .hallucinating  { border-color: #ef4444; background: #2a0505; }
+    .stuck          { border-color: #f59e0b; background: #2a1f00; }
+    .off            { border-color: #8b5cf6; background: #1a0a2e; }
+    .refusing       { border-color: #06b6d4; background: #042a30; }
+    .label {
+      font-weight: bold;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .confidence { float: right; font-size: 12px; color: #aaa; }
+    .message { margin-top: 6px; font-size: 13px; color: #ddd; max-width: 760px; }
+    .explanation { margin-top: 6px; font-size: 12px; color: #888; font-style: italic; }
+    .meta { margin-top: 4px; font-size: 11px; color: #555; }
+  </style>
+</head>
+<body>
+  <h2>AgentSense — Live Agent Monitor</h2>
+  <div id="status">Connecting...</div>
+  <div id="counter">0 events monitored · 0 anomalies detected</div>
+  <div id="feed"></div>
+
+  <script src="socket_client.js"></script>
+</body>
+</html>
