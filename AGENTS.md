@@ -246,6 +246,40 @@ npm run dev
 - Team playbook and demo script: `docs/agentsense_team_playbook.md`
 - Contact: ashishdawar2@gmail.com
 
+## Cursor Cloud specific instructions
+
+### Services overview
+
+| Service | Command | Port | Notes |
+|---|---|---|---|
+| Classifier (LLM judge) | `source venv/bin/activate && uvicorn classifier.model:app --port 8001` | 8001 | Start first; proxy calls it on every chat turn |
+| Proxy (FastAPI + Socket.IO) | `source venv/bin/activate && uvicorn proxy.main:socket_app --port 8000` | 8000 | Core backend; reads `.env` from repo root automatically |
+| Frontend (Vite React) | `cd frontend && npm run dev` | 5173 | Vite proxies `/proxy/*` and `/socket.io` to port 8000 |
+
+### Startup notes
+
+- `python3.12-venv` system package is required to create the virtualenv (installed via `sudo apt-get install -y python3.12-venv`).
+- The proxy and classifier both auto-load `/workspace/.env` at import time — no need to manually export env vars. Copy `.env.example` to `.env` and fill in `CLOD_API_KEY`.
+- `CLOD_API_KEY` is the only hard-blocking secret. Without it, `/proxy/chat` returns HTTP 500.
+- The classifier's `/classify` response time depends on the upstream CLōD model (~10-25s). The proxy's `CLASSIFIER_TIMEOUT` defaults to 65s to avoid premature timeouts.
+- Greptile and OpenClaw are optional; failures are silently swallowed.
+
+### Lint / typecheck / build
+
+- **Frontend typecheck**: `cd frontend && npx tsc --noEmit`
+- **Frontend build**: `cd frontend && npm run build`
+- No Python linter is currently configured in the repo; backend validation is via running the services and testing endpoints.
+
+### Testing a live event
+
+```bash
+curl -X POST http://localhost:8000/proxy/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"demo","message":"hello"}'
+```
+
+Verify hydration: `GET http://localhost:8000/proxy/events?limit=20` and `GET http://localhost:8000/proxy/sessions`.
+
 ## Change Log
 
 Use this section as a running log of repository changes made during active development sessions.
