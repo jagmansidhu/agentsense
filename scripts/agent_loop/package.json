@@ -1,0 +1,16 @@
+{
+  "name": "agent-loop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx agent_loop.ts"
+  },
+  "dependencies": {
+    "@cursor/sdk": "latest"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "@types/node": "latest"
+  }
+}

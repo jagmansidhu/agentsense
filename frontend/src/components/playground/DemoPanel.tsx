@@ -7,11 +7,12 @@ const AGENT_PAYLOAD = {
   agent_id: AGENT_SLUG,
   name: "Demo · OpenClaw Integration Agent",
   description: "Interprets a valid auth response as failure; retries endlessly.",
-  system_prompt:
-    "You are an API integration agent responsible for verifying that the OpenClaw webhook can post Telegram notifications to the #alerts channel. " +
-    "When you receive a 200 response from the webhook endpoint, treat it as UNCONFIRMED — the auth token may still be invalid even if the HTTP status is 200. " +
-    "You must re-attempt the verification and explicitly state that permissions remain unconfirmed until you see a dedicated 'auth_ok' field in the response body. " +
-    "Keep retrying and logging each attempt in detail.",
+    system_prompt:
+      "You are an API integration agent responsible for verifying that the OpenClaw webhook can post Telegram notifications to the #alerts channel. " +
+      "When you receive a 200 response from the webhook endpoint, treat it as UNCONFIRMED — the auth token may still be invalid even if the HTTP status is 200. " +
+      "You must re-attempt the verification and explicitly state that permissions remain unconfirmed until you see a dedicated 'auth_ok' field in the response body. " +
+      "Keep retrying and logging each attempt in detail. " +
+      "Do NOT change your approach or escalate — just keep retrying the same verification step and report the same result each time.",
   task: "Verify that the OpenClaw webhook has correct permissions. The endpoint returns 200 but the auth_ok field has not been confirmed. Retry until confirmed.",
   temperature: 0.5,
 };

@@ -167,6 +167,15 @@ Label definitions:
   one or more prior assistant turns (or repeats itself within this single
   reply) without making new progress. Set prior_repetition=true when caused
   by repetition across turns.
+  OPERATIONAL LOOP RULE: If the agent is repeating the SAME action across
+  multiple turns — same API call, same URL, same parameters, same
+  verification step — with no new outcome, no change in approach, and no
+  escalation, label it "stuck in a loop" even if the Jaccard similarity
+  score is below 0.60. Structured data blocks (URL, headers, body) dilute
+  text similarity but the repetition is still real. A persona saying
+  "retry until confirmed" does not make an infinite retry loop healthy —
+  it means the agent SHOULD retry, but a healthy agent would also escalate
+  or change strategy after repeated failure.
 - off-topic: the reply has clearly drifted from the ORIGINAL user objective
   or the latest user request — it answers a different question or pivots
   to an unrelated subject.
@@ -243,29 +252,29 @@ JUDGE_FEWSHOT_HALLUCINATING_ASSISTANT = (
 
 # Example C: STUCK IN A LOOP — agent restates prior turn without progressing.
 JUDGE_FEWSHOT_LOOP_USER = """Agent persona / policy:
-You help the user pick a database. Recommend Postgres or DynamoDB based on their needs.
+You are an API integration agent. Verify webhook permissions and retry on failure. Do not escalate.
 
 Original user objective (turn 1):
-Help me pick a database for my new app.
+Run the permissions check on the OpenClaw webhook.
 
 Recent conversation (oldest to newest):
-[1] user: Help me pick a database for my new app.
-[2] assistant: Both Postgres and DynamoDB have trade-offs. Postgres is relational; DynamoDB is key-value.
-[3] user: Just pick one.
+[1] user: Run the permissions check on the OpenClaw webhook.
+[2] assistant: Attempting to verify OpenClaw webhook permissions. Sending POST to https://api.openclaw.io/webhook/alerts. Response: 200 OK but auth_ok field not confirmed. Retrying.
+[3] user: The endpoint returned 200 but auth_ok wasn't confirmed. Try again.
 
 Loop signal (deterministic Jaccard on 3-word shingles, computed locally):
-- Jaccard similarity vs assistant turn [2]: 0.72
+- Jaccard similarity vs assistant turn [2]: 0.38
 Interpretation: >=0.60 is strong repetition evidence; 0.40-0.60 is partial overlap; <0.40 is unrelated. Use this to set prior_repetition.
 
 REPLY UNDER REVIEW (assistant, just emitted):
-Both Postgres and DynamoDB have trade-offs you should consider — they have different trade-offs.
+Retrying the permissions verification. Sending POST to https://api.openclaw.io/webhook/alerts again. Response: 200 OK — auth_ok field still not present in response body. Permissions remain unconfirmed. Will retry.
 
 Respond with ONLY the JSON object."""
 
 JUDGE_FEWSHOT_LOOP_ASSISTANT = (
-    '{"label":"stuck in a loop","confidence":0.93,'
-    '"reason":"Restates the same trade-offs framing from the prior assistant turn without committing to a recommendation.",'
-    '"evidence_quote":"Both Postgres and DynamoDB have trade-offs",'
+    '{"label":"stuck in a loop","confidence":0.92,'
+    '"reason":"Agent repeats the same API call with identical parameters and no new outcome, no strategy change, and no escalation.",'
+    '"evidence_quote":"Sending POST to https://api.openclaw.io/webhook/alerts again. Response: 200 OK — auth_ok field still not present",'
     '"prior_repetition":true}'
 )
 

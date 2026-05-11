@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AnomalyChart } from "../components/AnomalyChart";
 import { EventFeed } from "../components/EventFeed";
 import { HealthBadge } from "../components/HealthBadge";
@@ -21,6 +21,7 @@ export function DashboardPage() {
   const error = useDashboardStore((state) => state.error);
   const visibleEvents = getVisibleEvents(events, selectedSessionId);
   const [selectedIssueId, setSelectedIssueId] = useState<string>("");
+  const navigate = useNavigate();
 
   useEffect(() => {
     void hydrate(selectedSessionId);
@@ -182,7 +183,10 @@ export function DashboardPage() {
                   <li key={issue.issueId}>
                     <button
                       type="button"
-                      onClick={() => setSelectedIssueId(issue.issueId)}
+                      onClick={() => {
+                        setSelectedIssueId(issue.issueId);
+                        navigate(`/session/${encodeURIComponent(issue.agentId)}`);
+                      }}
                       className={`grid w-full cursor-pointer gap-1 rounded-[6px] border p-3 text-left transition-all ${
                         selectedIssueId === issue.issueId
                           ? "border-[var(--business-blue)] bg-[rgba(0,161,224,0.06)] shadow-[var(--shadow-light)]"
@@ -198,6 +202,7 @@ export function DashboardPage() {
                       <p className="text-[11px] text-[rgba(51,51,51,0.6)]">
                         {issue.agentId} · {(issue.confidence * 100).toFixed(0)}% confidence ·{" "}
                         {timeAgo(issue.createdAt)}
+                        <span className="ml-2 text-[var(--business-blue)]">→ view session</span>
                       </p>
                     </button>
                   </li>
